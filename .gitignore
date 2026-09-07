@@ -1,0 +1,8 @@
+venv/
+output/
+__pycache__
+.pytest_cache/
+.env
+tests/
+test*
+__init__.py

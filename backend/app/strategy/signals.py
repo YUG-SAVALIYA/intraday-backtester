@@ -1,0 +1,175 @@
+"""
+Signal engine: pure, stateless function that evaluates strategy conditions
+for a single (symbol, day) combination.
+
+ZERO look-ahead guarantee:
+  - Only receives: the current day's OHLCV row + precomputed 20-day avg volume
+  - Does NOT access any future rows
+  - The caller is responsible for computing avg_volume from prior rows only
+"""
+from dataclasses import dataclass
+from typing import Optional
+import math
+
+from app.strategy.params import StrategyParams
+
+
+@dataclass
+class SignalResult:
+    # Raw computed values
+    range_pct: float
+    body_pct: float
+    close_loc_pct: float
+    volume: float
+    avg_volume_20d: float
+    volume_multiple: float
+
+    # Per-condition pass flags
+    range_pass: bool
+    body_pass: bool
+    close_loc_pass: bool
+    volume_pass: bool
+    has_sufficient_history: bool  # False if fewer than lookback prior days
+
+    # Aggregate signal
+    signal: bool  # True only if all 4 conditions pass and history is sufficient
+
+    def to_dict(self) -> dict:
+        return {
+            "range_pct": round(float(self.range_pct), 4),
+            "body_pct": round(float(self.body_pct), 4),
+            "close_loc_pct": round(float(self.close_loc_pct), 4),
+            "volume": float(self.volume),
+            "avg_volume_20d": round(float(self.avg_volume_20d), 2),
+            "volume_multiple": round(float(self.volume_multiple), 4),
+            "range_pass": bool(self.range_pass),
+            "body_pass": bool(self.body_pass),
+            "close_loc_pass": bool(self.close_loc_pass),
+            "volume_pass": bool(self.volume_pass),
+            "has_sufficient_history": bool(self.has_sufficient_history),
+            "signal": bool(self.signal),
+        }
+
+
+def compute_signal(
+    open_: float,
+    high: float,
+    low: float,
+    close: float,
+    volume: float,
+    avg_volume_20d: float,       # precomputed mean of PRIOR lookback days (today excluded)
+    has_sufficient_history: bool,
+    params: StrategyParams,
+) -> SignalResult:
+    """
+    Evaluate all strategy conditions for a single day.
+
+    Parameters
+    ----------
+    open_, high, low, close : float  OHLCV for the signal day session
+    volume : float                   Today's session volume
+    avg_volume_20d : float           20-day (or lookback) trailing average volume
+                                     computed ONLY from prior completed days
+    has_sufficient_history : bool    True when >= lookback prior rows available
+    params : StrategyParams          All thresholds (no hardcoded values)
+
+    Returns
+    -------
+    SignalResult with all debug fields and final signal flag
+    """
+    # ── 1. Range %: (High - Low) / Low × 100 ──────────────────────────────
+    if low <= 0:
+        range_pct = 0.0
+    else:
+        range_pct = (high - low) / low * 100.0
+
+    # ── 2. Bullish Body %: (Close - Open) / Open × 100 ────────────────────
+    if open_ <= 0:
+        body_pct = 0.0
+    else:
+        body_pct = (close - open_) / open_ * 100.0
+
+    # ── 3. Close Location %: (Close - Low) / (High - Low) × 100 ──────────
+    hl_range = high - low
+    if hl_range <= 0:
+        close_loc_pct = 0.0
+    else:
+        close_loc_pct = (close - low) / hl_range * 100.0
+
+    # ── 4. Volume multiple ─────────────────────────────────────────────────
+    if avg_volume_20d > 0:
+        volume_multiple = volume / avg_volume_20d
+    else:
+        volume_multiple = 0.0
+
+    # ── Condition checks ───────────────────────────────────────────────────
+    range_pass    = range_pct >= params.min_range_pct
+    body_pass     = body_pct > params.min_body_pct
+    close_loc_pass = close_loc_pct >= params.min_close_loc_pct
+    volume_pass   = volume_multiple > params.volume_multiplier and has_sufficient_history
+
+    all_pass = (
+        has_sufficient_history
+        and range_pass
+        and body_pass
+        and close_loc_pass
+        and volume_pass
+    )
+
+    return SignalResult(
+        range_pct=range_pct,
+        body_pct=body_pct,
+        close_loc_pct=close_loc_pct,
+        volume=volume,
+        avg_volume_20d=avg_volume_20d,
+        volume_multiple=volume_multiple,
+        range_pass=range_pass,
+        body_pass=body_pass,
+        close_loc_pass=close_loc_pass,
+        volume_pass=volume_pass,
+        has_sufficient_history=has_sufficient_history,
+        signal=all_pass,
+    )
+
+
+def compute_signals_for_symbol(df_symbol, params: StrategyParams) -> list[dict]:
+    """
+    Compute signal results for every row of a symbol's daily DataFrame.
+    Returns a list of dicts (one per row) with date + signal fields.
+
+    NO look-ahead: avg_volume for row i is computed from rows [i-lookback .. i-1].
+    """
+    rows = df_symbol.to_dict("records")
+    results = []
+    lb = params.volume_lookback
+
+    for i, row in enumerate(rows):
+        # Compute trailing average volume from prior rows only
+        prior_rows = rows[max(0, i - lb) : i]
+        has_sufficient = len(prior_rows) >= lb
+        if has_sufficient:
+            avg_vol = sum(r["volume"] for r in prior_rows) / lb
+        elif prior_rows:
+            avg_vol = sum(r["volume"] for r in prior_rows) / len(prior_rows)
+        else:
+            avg_vol = 0.0
+
+        sig = compute_signal(
+            open_=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+            avg_volume_20d=avg_vol,
+            has_sufficient_history=has_sufficient,
+            params=params,
+        )
+        entry = {"date": str(row["date"]), **sig.to_dict()}
+        # Add raw OHLCV for debugger
+        entry["open"] = row["open"]
+        entry["high"] = row["high"]
+        entry["low"] = row["low"]
+        entry["close"] = row["close"]
+        results.append(entry)
+
+    return results

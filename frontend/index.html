@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overnight Breakout Backtester | Fast Execution</title>
+  <meta name="description" content="Lightning fast overnight breakout strategy backtester." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <header class="app-header">
+    <div class="header-brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M3 17L9 11L13 15L21 7" stroke="#2962ff" stroke-width="2.5" stroke-linecap="round"
+          stroke-linejoin="round" />
+        <path d="M17 7H21V11" stroke="#2962ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span class="brand-name">BreakoutBT</span>
+      <span class="brand-badge">FAST</span>
+    </div>
+    <div class="header-status">
+      <div id="status-dot" class="status-dot"></div>
+      <span id="status-text">Connecting...</span>
+    </div>
+  </header>
+
+  <main class="dashboard-layout">
+    <!-- Sidebar / Controls -->
+    <aside class="controls-panel">
+      <div class="panel-section">
+        <h2 class="section-title">Backtest Settings</h2>
+
+        <div class="form-group">
+          <label>Universe (Companies)</label>
+          <select id="cfg-universe" class="input-field">
+            <option value="nifty50">Nifty 50</option>
+            <option value="nifty100">Nifty 100</option>
+            <option value="nifty200">Nifty 200</option>
+            <option value="nifty500">Nifty 500</option>
+            <option value="all">All Symbols (2000+)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Min Range %</label>
+          <input type="number" id="cfg-range" class="input-field" value="10" step="0.5" />
+        </div>
+
+        <div class="form-group">
+          <label>Min Body %</label>
+          <input type="number" id="cfg-body" class="input-field" value="5" step="0.5" />
+        </div>
+
+        <div class="form-group">
+          <label>Min Close Location %</label>
+          <input type="number" id="cfg-close-loc" class="input-field" value="90" step="1" />
+        </div>
+
+        <div class="form-group">
+          <label>Volume Lookback (Days)</label>
+          <input type="number" id="cfg-vol-lookback" class="input-field" value="20" step="1" />
+        </div>
+
+        <div class="form-group">
+          <label>Volume Multiplier (x Avg)</label>
+          <input type="number" id="cfg-vol-mult" class="input-field" value="2" step="0.1" />
+        </div>
+
+        <div class="form-group">
+          <label>Max Volume % (Liquidity Limit)</label>
+          <input type="number" id="cfg-vol-pct" class="input-field" value="5" step="0.1" />
+        </div>
+
+        <div class="form-group">
+          <label>Start Date</label>
+          <input type="date" id="cfg-start" class="input-field" value="2022-01-01" />
+        </div>
+
+        <div class="form-group">
+          <label>End Date</label>
+          <input type="date" id="cfg-end" class="input-field" value="2022-12-31" />
+        </div>
+
+        <button id="btn-run" class="btn btn-primary run-btn">Run Backtest</button>
+      </div>
+
+      <!-- Past Runs Section -->
+      <div class="panel-section past-runs-section">
+        <h2 class="section-title">Past Runs</h2>
+        <div class="form-group">
+          <label>Recent Runs</label>
+          <select id="select-past-run" class="input-field">
+            <option value="">-- Select a run --</option>
+          </select>
+        </div>
+        <button id="btn-load-past-run" class="btn btn-secondary" disabled>Load Selected Run</button>
+        <button id="btn-browse-runs" class="btn btn-ghost" style="margin-top:8px;">Browse All History</button>
+        <div class="file-upload-wrapper">
+          <label class="file-upload-label" for="file-upload-run">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload JSON from Disk
+          </label>
+          <input type="file" id="file-upload-run" accept=".json" />
+        </div>
+        <div id="past-run-status" class="past-run-status"></div>
+      </div>
+    </aside>
+
+    <!-- Main Results Area -->
+    <section class="results-panel">
+
+      <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <div id="loading-text">Running backtest...</div>
+      </div>
+
+      <div id="results-content" class="hidden">
+        <!-- Top KPIs -->
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">Total Trades</div>
+            <div class="kpi-value" id="kpi-trades">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Win Rate</div>
+            <div class="kpi-value" id="kpi-winrate">0.00%</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Total Return</div>
+            <div class="kpi-value" id="kpi-return">0.00%</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Net P&L (₹)</div>
+            <div class="kpi-value" id="kpi-pnl">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Max Drawdown</div>
+            <div class="kpi-value" id="kpi-dd">0.00%</div>
+          </div>
+        </div>
+
+        <!-- Advanced KPIs Grid -->
+        <div class="kpi-grid advanced-kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">Generated Signals</div>
+            <div class="kpi-value" id="kpi-generated">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Rejected Trades</div>
+            <div class="kpi-value" id="kpi-rejected">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Profitable Trades</div>
+            <div class="kpi-value profit" id="kpi-wins">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Losing Trades</div>
+            <div class="kpi-value loss" id="kpi-losses">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Profit Factor</div>
+            <div class="kpi-value" id="kpi-profit-factor">0.00</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Avg Return / Trade</div>
+            <div class="kpi-value" id="kpi-avg-return">0.00%</div>
+          </div>
+        </div>
+
+        <!-- Theoretical Metrics Area -->
+        <div class="section-header-row" style="margin-top:24px; border-top: 1px solid var(--border); padding-top: 24px;">
+          <div class="section-header-title">
+            <h3>Theoretical Performance (All Signals)</h3>
+            <span style="font-size:12px; color:var(--text-muted); margin-left: 12px; font-weight:normal;">What if you bought every single signal with unlimited capital & liquidity?</span>
+          </div>
+        </div>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">Total Signals Generated</div>
+            <div class="kpi-value" id="kpi-theoretical-trades">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Theoretical Win Rate</div>
+            <div class="kpi-value" id="kpi-theoretical-winrate">0.00%</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Theoretical Avg Return</div>
+            <div class="kpi-value" id="kpi-theoretical-avg">0.00%</div>
+          </div>
+        </div>
+
+        <!-- Equity Chart -->
+        <div class="chart-container">
+          <div class="chart-header">
+            <h3>Equity Curve</h3>
+          </div>
+          <div id="equity-chart" class="chart-box"></div>
+        </div>
+
+        <!-- Periodic Returns Grid -->
+        <div class="periodic-returns-section">
+          <h3>Periodic Returns</h3>
+          <div class="periodic-grid">
+            <div class="periodic-col">
+              <h4>Yearly</h4>
+              <div class="table-wrapper">
+                <table class="data-table" id="table-yearly">
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="periodic-col">
+              <h4>Monthly</h4>
+              <div class="table-wrapper">
+                <table class="data-table" id="table-monthly">
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="periodic-col">
+              <h4>Weekly</h4>
+              <div class="table-wrapper">
+                <table class="data-table" id="table-weekly">
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="periodic-col">
+              <h4>Daily</h4>
+              <div class="table-wrapper">
+                <table class="data-table" id="table-daily">
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Day-Wise Ledger Section -->
+        <div class="ledger-section">
+          <div class="section-header-row">
+            <div class="section-header-title">
+              <h3>Day-Wise Portfolio Ledger</h3>
+              <span class="section-pill" id="ledger-count-pill">0 Days</span>
+            </div>
+            <div class="ledger-controls">
+              <input type="text" id="ledger-search" class="search-box" placeholder="Search date / symbol..." />
+              <label class="toggle-filter">
+                <input type="checkbox" id="ledger-active-only" checked />
+                <span>Active days only</span>
+              </label>
+              <div class="pagination-controls">
+                <button id="ledger-prev-btn" class="btn-page" title="Previous page">◀</button>
+                <span id="ledger-page-indicator" class="page-indicator">Page 1 / 1</span>
+                <button id="ledger-next-btn" class="btn-page" title="Next page">▶</button>
+                <select id="ledger-page-size" class="select-page-size">
+                  <option value="50">50 / page</option>
+                  <option value="100" selected>100 / page</option>
+                  <option value="250">250 / page</option>
+                  <option value="all">All</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Summary Strip -->
+          <div class="ledger-summary-strip">
+            <div class="strip-item">
+              <span class="strip-label">Initial Capital</span>
+              <span class="strip-value" id="strip-init-cap">₹0</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-label">Current / Final Equity</span>
+              <span class="strip-value" id="strip-final-eq">₹0</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-label">Peak Equity</span>
+              <span class="strip-value" id="strip-peak-eq">₹0</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-label">Max Daily Gain</span>
+              <span class="strip-value profit" id="strip-max-gain">+₹0</span>
+            </div>
+            <div class="strip-item">
+              <span class="strip-label">Max Daily Drawdown</span>
+              <span class="strip-value loss" id="strip-max-dd">-0.00%</span>
+            </div>
+          </div>
+
+          <div class="table-wrapper full-height">
+            <table class="data-table" id="table-ledger">
+              <thead>
+                <tr>
+                  <th style="width: 110px;">Date</th>
+                  <th class="text-right">Total Equity</th>
+                  <th class="text-right">Available Cash</th>
+                  <th class="text-right">Invested Capital</th>
+                  <th class="text-right">Today's P&L</th>
+                  <th class="text-right">Today's DD</th>
+                  <th class="text-center">Buys (15:20)</th>
+                  <th class="text-center">Sells (09:15)</th>
+                  <th class="text-center">Holdings</th>
+                  <th class="text-center" style="width: 80px;">Details</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Full Trade Log -->
+        <div class="trades-log-section">
+          <div class="section-header-row">
+            <div class="section-header-title">
+              <h3>Full Trade Log</h3>
+              <span class="section-pill" id="trades-count-pill">0 Trades</span>
+            </div>
+            <div class="ledger-controls">
+              <input type="text" id="trades-search" class="search-box" placeholder="Filter symbol / date..." />
+              <div class="pagination-controls">
+                <button id="trades-prev-btn" class="btn-page" title="Previous page">◀</button>
+                <span id="trades-page-indicator" class="page-indicator">Page 1 / 1</span>
+                <button id="trades-next-btn" class="btn-page" title="Next page">▶</button>
+                <select id="trades-page-size" class="select-page-size">
+                  <option value="50">50 / page</option>
+                  <option value="100" selected>100 / page</option>
+                  <option value="250">250 / page</option>
+                  <option value="all">All</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrapper full-height">
+            <table class="data-table" id="table-trades">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Entry Date</th>
+                  <th>Exit Date</th>
+                  <th>Qty</th>
+                  <th>Entry Price</th>
+                  <th>Exit Price</th>
+                  <th class="text-right">Gross P&L</th>
+                  <th class="text-right">Fees</th>
+                  <th class="text-right">Net P&L</th>
+                  <th class="text-right">Return %</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="welcome-message" class="welcome-message">
+        <h2>Ready to run backtest</h2>
+        <p>Select your universe and parameters on the left, then click <strong>Run Backtest</strong>.</p>
+        <p>The first run may take a moment to load and aggregate the 5-minute data into memory. Subsequent runs will be
+          extremely fast.</p>
+      </div>
+
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+
+  <!-- Past Runs History Modal -->
+  <div id="modal-past-runs" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-title">Backtest Run History</h2>
+        <div class="modal-header-actions">
+          <input type="text" id="modal-search" class="modal-search-box" placeholder="Filter by date, return, trades..." />
+          <button id="btn-refresh-runs" class="btn-icon" title="Refresh list">&#x21bb;</button>
+          <button id="btn-close-modal" class="modal-close" aria-label="Close">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="table-wrapper">
+          <table class="data-table modal-runs-table" id="table-modal-runs">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th class="text-right">Trades</th>
+                <th class="text-right">Return %</th>
+                <th class="text-right">Net P&amp;L</th>
+                <th class="text-right">Win Rate</th>
+                <th class="text-right">Max DD</th>
+                <th class="text-right">Symbols</th>
+                <th class="text-right">Size</th>
+                <th class="text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="modal-runs-tbody"></tbody>
+          </table>
+        </div>
+        <div id="modal-empty" class="modal-empty hidden">No past runs found in the output folder.</div>
+      </div>
+    </div>
+  </div>
+
+</body>
+
+</html>

@@ -33,6 +33,7 @@ class SignalResult:
 
     # Aggregate signal
     signal: bool  # True only if all 4 conditions pass and history is sufficient
+    score: float = 0.0  # Breakout strength score (how strongly conditions were exceeded)
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +49,7 @@ class SignalResult:
             "volume_pass": bool(self.volume_pass),
             "has_sufficient_history": bool(self.has_sufficient_history),
             "signal": bool(self.signal),
+            "score": round(float(self.score), 4),
         }
 
 
@@ -103,10 +105,10 @@ def compute_signal(
         volume_multiple = 0.0
 
     # ── Condition checks ───────────────────────────────────────────────────
-    range_pass    = range_pct >= params.min_range_pct
-    body_pass     = body_pct > params.min_body_pct
-    close_loc_pass = close_loc_pct >= params.min_close_loc_pct
-    volume_pass   = volume_multiple > params.volume_multiplier and has_sufficient_history
+    range_pass    = range_pct >= params.min_range_pct or math.isclose(range_pct, params.min_range_pct, abs_tol=1e-9)
+    body_pass     = body_pct > params.min_body_pct and not math.isclose(body_pct, params.min_body_pct, abs_tol=1e-9)
+    close_loc_pass = close_loc_pct >= params.min_close_loc_pct or math.isclose(close_loc_pct, params.min_close_loc_pct, abs_tol=1e-9)
+    volume_pass   = volume_multiple > params.volume_multiplier and not math.isclose(volume_multiple, params.volume_multiplier, abs_tol=1e-9) and has_sufficient_history
 
     all_pass = (
         has_sufficient_history
@@ -115,6 +117,13 @@ def compute_signal(
         and close_loc_pass
         and volume_pass
     )
+
+    # Breakout strength score: measures how strongly conditions were exceeded
+    vol_ratio = (volume_multiple / params.volume_multiplier) if params.volume_multiplier > 0 else 1.0
+    body_ratio = (body_pct / params.min_body_pct) if params.min_body_pct > 0 else 1.0
+    range_ratio = (range_pct / params.min_range_pct) if params.min_range_pct > 0 else 1.0
+    close_ratio = (close_loc_pct / params.min_close_loc_pct) if params.min_close_loc_pct > 0 else 1.0
+    score = vol_ratio + body_ratio + range_ratio + close_ratio
 
     return SignalResult(
         range_pct=range_pct,
@@ -129,6 +138,7 @@ def compute_signal(
         volume_pass=volume_pass,
         has_sufficient_history=has_sufficient_history,
         signal=all_pass,
+        score=score if all_pass else 0.0,
     )
 
 

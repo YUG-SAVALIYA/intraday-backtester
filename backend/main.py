@@ -163,6 +163,9 @@ def clear_data_cache():
     return {"message": "Cache cleared"}
 
 
+_UNIVERSE_CACHE: dict[str, list[str]] = {}
+
+
 @app.get("/api/universe/{name}")
 def get_universe(name: str):
     """Fetch symbols for a specific universe (e.g. nifty50, nifty100)."""
@@ -172,6 +175,9 @@ def get_universe(name: str):
     if name == "all":
         return {"universe": "all", "symbols": get_available_symbols()}
         
+    if name in _UNIVERSE_CACHE:
+        return {"universe": name, "symbols": _UNIVERSE_CACHE[name]}
+
     url_map = {
         "nifty50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
         "nifty100": "https://archives.nseindia.com/content/indices/ind_nifty100list.csv",
@@ -190,6 +196,7 @@ def get_universe(name: str):
         # Only return symbols that we actually have parquet data for
         available = set(get_available_symbols())
         valid_symbols = [s for s in symbols if s in available]
+        _UNIVERSE_CACHE[name] = valid_symbols
         
         return {"universe": name, "symbols": valid_symbols}
     except Exception as e:

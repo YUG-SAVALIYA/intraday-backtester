@@ -16,7 +16,7 @@ class StrategyParams:
 
     # Volume filter
     volume_lookback: int = 20          # Number of prior trading days for avg volume
-    volume_multiplier: float = 2.0     # Today volume > multiplier × avg volume
+    volume_multiplier: float = 2.5     # Optimized: 2.5x volume spike
 
 
 @dataclass
@@ -38,14 +38,14 @@ class SizingParams:
 
     # Per-trade allocation
     allocation_type: str = "pct"       # "pct" | "fixed"
-    allocation_value: float = 20.0     # % of equity per trade (or fixed ₹ amount)
+    allocation_value: float = 15.0     # Optimized: 15% of equity per trade
 
     # Portfolio limits
-    max_positions: int = 5             # Max simultaneous open trades
+    max_positions: int = 3             # Optimized: Max 3 simultaneous open trades
     max_exposure_pct: float = 100.0    # Max gross exposure as % of equity
     
     # Liquidity limits
-    max_volume_pct: float = 5.0        # Max % of 20-day avg volume allowed per trade
+    max_volume_pct: float = 0.0        # Max % of 20-day avg volume allowed per trade (0.0 = disabled)
 
     # Leverage
     leverage: float = 1.0             # 1.0 = no leverage

@@ -48,7 +48,7 @@ def compute_metrics(
         final_equity = snapshots[-1].equity
         equities = [s.equity for s in snapshots]
 
-        # Max drawdown
+        # Max drawdown (from authoritative daily EOD equity series)
         max_dd_pct, max_dd_abs = _compute_max_drawdown(equities)
 
         # CAGR
@@ -56,16 +56,20 @@ def compute_metrics(
         end_date = snapshots[-1].date
         years = max((end_date - start_date).days / 365.25, 1 / 365.25)
         total_return_pct = _safe_div(final_equity - initial_capital, initial_capital) * 100
-        cagr = (math.pow(final_equity / initial_capital, 1.0 / years) - 1.0) * 100 if initial_capital > 0 else 0
+        # Guard: math.pow raises ValueError if base is negative or zero (wiped-out portfolio)
+        if initial_capital > 0 and final_equity > 0:
+            cagr = (math.pow(final_equity / initial_capital, 1.0 / years) - 1.0) * 100
+        else:
+            cagr = -100.0 if final_equity <= 0 else 0.0
 
         # Sharpe ratio (daily returns, annualized)
-        sharpe = _compute_sharpe(snapshots)
+        sharpe = _compute_sharpe(snapshots, initial_capital)
 
         # Calmar
         calmar = _safe_div(cagr, max_dd_pct) if max_dd_pct > 0 else 0
         
         # Periodic Returns
-        periodic_returns = _compute_periodic_returns(snapshots)
+        periodic_returns = _compute_periodic_returns(snapshots, initial_capital)
     else:
         final_equity = initial_capital + total_net_pnl
         max_dd_pct = max_dd_abs = 0.0
@@ -117,7 +121,11 @@ def compute_metrics(
 
 
 def _compute_max_drawdown(equities: list[float]) -> tuple[float, float]:
-    """Return (max_dd_pct, max_dd_abs)."""
+    """
+    Compute daily EOD maximum drawdown from authoritative daily EOD equity series.
+    Returns (max_dd_pct, max_dd_abs) where max_dd_pct is positive magnitude (e.g. 20.14)
+    matching the existing reporting convention.
+    """
     if not equities:
         return 0.0, 0.0
     peak = equities[0]
@@ -127,7 +135,7 @@ def _compute_max_drawdown(equities: list[float]) -> tuple[float, float]:
         if eq > peak:
             peak = eq
         dd_abs = peak - eq
-        dd_pct = dd_abs / peak * 100 if peak > 0 else 0
+        dd_pct = (dd_abs / peak * 100.0) if peak > 0 else 0.0
         if dd_pct > max_dd_pct:
             max_dd_pct = dd_pct
             max_dd_abs = dd_abs
@@ -136,8 +144,10 @@ def _compute_max_drawdown(equities: list[float]) -> tuple[float, float]:
 
 def compute_drawdown_series(equities: list[float]) -> list[float]:
     """Return per-day drawdown % from peak (negative values)."""
+    if not equities:
+        return []
     result = []
-    peak = 0.0
+    peak = equities[0]
     for eq in equities:
         if eq > peak:
             peak = eq
@@ -146,11 +156,11 @@ def compute_drawdown_series(equities: list[float]) -> list[float]:
     return result
 
 
-def _compute_sharpe(snapshots: list[DailySnapshot], risk_free_annual: float = 0.065) -> float:
+def _compute_sharpe(snapshots: list[DailySnapshot], initial_capital: float = 0.0, risk_free_annual: float = 0.065) -> float:
     """Annualized Sharpe using daily equity returns."""
-    if len(snapshots) < 2:
+    if len(snapshots) < 1:
         return 0.0
-    equities = [s.equity for s in snapshots]
+    equities = ([initial_capital] if initial_capital > 0 else []) + [s.equity for s in snapshots]
     daily_returns = [
         (equities[i] - equities[i - 1]) / equities[i - 1]
         for i in range(1, len(equities))
@@ -184,52 +194,87 @@ def _empty_metrics(initial_capital: float) -> dict:
     }
 
 
-def _compute_periodic_returns(snapshots: list[DailySnapshot]) -> dict:
-    import pandas as pd
+def _compute_periodic_returns(snapshots: list[DailySnapshot], initial_capital: float = 0.0) -> dict:
+    """
+    Compute daily, weekly, monthly, and yearly returns from chronological daily snapshots.
+    Guarantees no missing initial periods (e.g. first year, first month, first week)
+    by correctly referencing initial_capital as starting equity for the first period
+    and prior period's ending equity for subsequent periods.
+    """
     if not snapshots:
         return {"daily": [], "weekly": [], "monthly": [], "yearly": []}
-    
-    dates = [s.date for s in snapshots]
-    equities = [s.equity for s in snapshots]
-    
-    df = pd.DataFrame({"date": pd.to_datetime(dates), "equity": equities})
-    df.set_index("date", inplace=True)
-    
-    # Calculate period returns by taking the equity at the end of each period
-    # vs the equity at the end of the previous period.
-    
-    def calculate_returns(resampled_series):
-        # resampled_series is equity at period end
-        returns = resampled_series.pct_change() * 100
-        # drop NaN
-        returns = returns.dropna()
-        # format back to strings
-        result = []
-        for d, r in returns.items():
-            result.append({"period": d.strftime("%Y-%m-%d"), "return_pct": round(r, 4)})
-        return result
 
-    # Daily
-    daily = calculate_returns(df["equity"])
-    
-    # Weekly (W-FRI)
-    weekly_eq = df["equity"].resample("W-FRI").last().dropna()
+    from collections import defaultdict
+
+    # Ensure snapshots are sorted chronologically
+    sorted_snaps = sorted(snapshots, key=lambda s: s.date)
+
+    # ── Daily returns ──────────────────────────────────────────────────
+    daily = [
+        {"period": str(s.date), "return_pct": round(s.daily_pnl_pct, 4)}
+        for s in sorted_snaps
+    ]
+
+    # ── Weekly returns (grouped by ISO calendar week) ──────────────────
+    weekly_groups = defaultdict(list)
+    for s in sorted_snaps:
+        iso_year, iso_week, _ = s.date.isocalendar()
+        weekly_groups[(iso_year, iso_week)].append(s)
+
     weekly = []
-    for d, r in (weekly_eq.pct_change() * 100).dropna().items():
-        weekly.append({"period": f"Week of {d.strftime('%Y-%m-%d')}", "return_pct": round(r, 4)})
-        
-    # Monthly
-    monthly_eq = df["equity"].resample("ME").last().dropna()
+    prev_week_equity = initial_capital
+    # Sort by (iso_year, iso_week) to guarantee chronological order
+    for _, sn_list in sorted(weekly_groups.items()):
+        end_equity = sn_list[-1].equity
+        ret_pct = ((end_equity - prev_week_equity) / prev_week_equity * 100.0) if prev_week_equity > 0 else 0.0
+        start_d = sn_list[0].date
+        weekly.append({
+            "period": f"Week of {start_d.strftime('%Y-%m-%d')}",
+            "return_pct": round(ret_pct, 4),
+            "start_equity": round(prev_week_equity, 2),
+            "end_equity": round(end_equity, 2),
+        })
+        prev_week_equity = end_equity
+
+    # ── Monthly returns (grouped by calendar month) ───────────────────
+    monthly_groups = defaultdict(list)
+    for s in sorted_snaps:
+        monthly_groups[(s.date.year, s.date.month)].append(s)
+
     monthly = []
-    for d, r in (monthly_eq.pct_change() * 100).dropna().items():
-        monthly.append({"period": d.strftime("%Y-%b"), "return_pct": round(r, 4)})
-        
-    # Yearly
-    yearly_eq = df["equity"].resample("YE").last().dropna()
+    prev_month_equity = initial_capital
+    # Sort by (year, month) to guarantee chronological order
+    for _, sn_list in sorted(monthly_groups.items()):
+        end_equity = sn_list[-1].equity
+        ret_pct = ((end_equity - prev_month_equity) / prev_month_equity * 100.0) if prev_month_equity > 0 else 0.0
+        start_d = sn_list[0].date
+        monthly.append({
+            "period": start_d.strftime("%Y-%b"),
+            "return_pct": round(ret_pct, 4),
+            "start_equity": round(prev_month_equity, 2),
+            "end_equity": round(end_equity, 2),
+        })
+        prev_month_equity = end_equity
+
+    # ── Yearly returns (grouped by calendar year) ──────────────────────
+    yearly_groups = defaultdict(list)
+    for s in sorted_snaps:
+        yearly_groups[s.date.year].append(s)
+
     yearly = []
-    for d, r in (yearly_eq.pct_change() * 100).dropna().items():
-        yearly.append({"period": d.strftime("%Y"), "return_pct": round(r, 4)})
-        
+    prev_year_equity = initial_capital
+    for y in sorted(yearly_groups.keys()):
+        sn_list = yearly_groups[y]
+        end_equity = sn_list[-1].equity
+        ret_pct = ((end_equity - prev_year_equity) / prev_year_equity * 100.0) if prev_year_equity > 0 else 0.0
+        yearly.append({
+            "period": str(y),
+            "return_pct": round(ret_pct, 4),
+            "start_equity": round(prev_year_equity, 2),
+            "end_equity": round(end_equity, 2),
+        })
+        prev_year_equity = end_equity
+
     return {
         "daily": daily,
         "weekly": weekly,

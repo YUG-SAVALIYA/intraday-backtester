@@ -67,25 +67,34 @@ _NSE_HOLIDAYS_RAW: list[str] = [
 
 NSE_HOLIDAYS: Set[date] = {date.fromisoformat(d) for d in _NSE_HOLIDAYS_RAW}
 
+from functools import lru_cache
+
 # Allow user to inject extra holidays at runtime
 _extra_holidays: Set[date] = set()
+_all_holidays_set: Set[date] = set(NSE_HOLIDAYS)
 
 
 def add_holiday(d: date) -> None:
     _extra_holidays.add(d)
+    _all_holidays_set.add(d)
+    is_trading_day.cache_clear()
+    prev_trading_day.cache_clear()
+    next_trading_day.cache_clear()
 
 
 def _all_holidays() -> Set[date]:
-    return NSE_HOLIDAYS | _extra_holidays
+    return _all_holidays_set
 
 
+@lru_cache(maxsize=16384)
 def is_trading_day(d: date) -> bool:
     """Return True if d is a valid NSE trading day."""
     if d.weekday() >= 5:   # Saturday=5, Sunday=6
         return False
-    return d not in _all_holidays()
+    return d not in _all_holidays_set
 
 
+@lru_cache(maxsize=16384)
 def prev_trading_day(d: date, n: int = 1) -> date:
     """Return the nth previous trading day before d (d not included)."""
     cursor = d - timedelta(days=1)
@@ -99,6 +108,7 @@ def prev_trading_day(d: date, n: int = 1) -> date:
     return cursor
 
 
+@lru_cache(maxsize=16384)
 def next_trading_day(d: date) -> date:
     """Return the first trading day strictly after d."""
     cursor = d + timedelta(days=1)

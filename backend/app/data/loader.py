@@ -31,7 +31,7 @@ def _parquet_path(symbol: str, timeframe: str = "5min") -> Optional[str]:
 
 
 def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """Normalize, filter to 15:20, and aggregate 5-min data to daily."""
+    """Normalize, filter to 15:25, and aggregate 5-min data to daily."""
     df = df.copy()
     
     if "datetime" not in df.columns and "Date" in df.columns:
@@ -52,8 +52,8 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df["date"] = dt_ist.dt.date
     df["time"] = dt_ist.dt.time
 
-    # Filter to market hours we care about (up to 15:20)
-    cutoff_time = pd.to_datetime("15:20:00").time()
+    # Filter to market hours we care about (up to 15:25)
+    cutoff_time = pd.to_datetime("15:25:00").time()
     df = df[df["time"] <= cutoff_time]
 
     # Drop missing

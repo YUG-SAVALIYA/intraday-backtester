@@ -441,7 +441,7 @@ function renderLedgerDetailRow(d) {
   // Buys items
   let buysHtml = "";
   if (!d.buys || d.buys.length === 0) {
-    buysHtml = `<div class="detail-empty">No buys executed on this day (15:20 IST)</div>`;
+    buysHtml = `<div class="detail-empty">No buys executed on this day (15:25 IST)</div>`;
   } else {
     buysHtml = d.buys.map(b => `
       <div class="detail-item">
@@ -516,7 +516,7 @@ function renderLedgerDetailRow(d) {
             <!-- Buys Today -->
             <div class="detail-card">
               <div class="detail-card-header">
-                <span class="detail-card-title">🛒 Buys Today (15:20 IST)</span>
+                <span class="detail-card-title">🛒 Buys Today (15:25 IST)</span>
                 <span class="badge badge-buy">${(d.buys && d.buys.length) || 0}</span>
               </div>
               <div class="detail-list">${buysHtml}</div>
@@ -608,7 +608,7 @@ function renderTradesRows() {
     return `
       <tr>
         <td><strong>${t.symbol}</strong> <span class="badge ${badgeCls}">${isWin ? 'WIN' : 'LOSS'}</span></td>
-        <td>${t.entry_date} <span class="neutral" style="font-size:11px">15:20</span></td>
+        <td>${t.entry_date} <span class="neutral" style="font-size:11px">15:25</span></td>
         <td>${t.exit_date} <span class="neutral" style="font-size:11px">09:15</span></td>
         <td class="font-mono font-bold">${t.qty}</td>
         <td class="font-mono">₹${fmt(t.entry_price)}</td>

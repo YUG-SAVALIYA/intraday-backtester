@@ -116,7 +116,7 @@ class Portfolio:
         self._daily_pnl: float = 0.0
         self._daily_buys: list[dict] = []
         self._daily_sells: list[dict] = []
-        self.peak_equity: float = initial_capital
+        self.peak_equity: Optional[float] = None
         self.prev_equity: float = initial_capital
 
     @property
@@ -182,7 +182,7 @@ class Portfolio:
         self._daily_buys.append({
             "symbol": symbol,
             "entry_date": str(entry_date),
-            "entry_time": "15:20",
+            "entry_time": "15:25",
             "entry_price": round(entry_price, 4),
             "qty": qty,
             "trade_value": round(qty * entry_price, 2),
@@ -247,7 +247,7 @@ class Portfolio:
         self._daily_sells.append({
             "symbol": symbol,
             "entry_date": str(pos.entry_date),
-            "entry_time": "15:20",
+            "entry_time": "15:25",
             "exit_date": str(exit_date),
             "exit_time": "09:15",
             "entry_price": round(pos.entry_price, 4),
@@ -265,6 +265,35 @@ class Portfolio:
 
         return trade
 
+    def mark_unexecutable_trade(self, symbol: str, date: date, reason: str) -> None:
+        """
+        Flag a trade as unexecutable (e.g., missing data on the strict exit day).
+        The position is removed from the active open positions, and the exact cash deducted 
+        at entry (own capital + entry fees) is refunded. This prevents artificial drops in 
+        equity and Max Drawdown, and keeps the trade completely excluded from normal P&L statistics.
+        """
+        pos = self.open_positions.pop(symbol, None)
+        if pos is None:
+            return
+            
+        if not hasattr(self, "unexecutable_trades"):
+            self.unexecutable_trades = []
+            
+        self.unexecutable_trades.append({
+            "symbol": symbol,
+            "entry_date": str(pos.entry_date),
+            "flagged_date": str(date),
+            "entry_price": pos.entry_price,
+            "qty": pos.qty,
+            "own_capital_refunded": pos.own_capital_used,
+            "entry_fees_refunded": pos.entry_fees,
+            "reason": reason
+        })
+        
+        # Completely cancel the financial impact of the entry to protect equity and Max DD.
+        # This restores the cash exactly as if the trade was never entered.
+        self.cash += (pos.own_capital_used + pos.entry_fees)
+
     def take_daily_snapshot(self, d: date, mark_prices: dict[str, float] = None) -> None:
         """Record end-of-day portfolio state."""
         eq = self.equity(mark_prices)
@@ -273,8 +302,8 @@ class Portfolio:
         daily_pnl = eq - self.prev_equity
         daily_pnl_pct = (daily_pnl / self.prev_equity * 100) if self.prev_equity > 0 else 0.0
 
-        # Peak equity & Drawdown
-        if eq > self.peak_equity:
+        # Peak equity & Drawdown (EOD equity only)
+        if self.peak_equity is None or eq > self.peak_equity:
             self.peak_equity = eq
         dd_abs = self.peak_equity - eq
         dd_pct = -(dd_abs / self.peak_equity * 100) if self.peak_equity > 0 else 0.0
@@ -295,7 +324,7 @@ class Portfolio:
                 "symbol": sym,
                 "qty": pos.qty,
                 "entry_date": str(pos.entry_date),
-                "entry_time": "15:20",
+                "entry_time": "15:25",
                 "entry_price": round(pos.entry_price, 4),
                 "current_price": round(mkt_price, 4),
                 "cost_basis": round(pos.cost_basis, 2),

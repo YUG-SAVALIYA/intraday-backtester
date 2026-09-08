@@ -20,7 +20,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from app.data.calendar import is_trading_day, next_trading_day, get_trading_days
+from app.data.calendar import is_trading_day, next_trading_day, prev_trading_day, get_trading_days
 from app.data.loader import load_symbol, load_symbols_bulk, get_available_symbols
 from app.strategy.params import BacktestConfig
 from app.strategy.signals import compute_signal, SignalResult
@@ -56,15 +56,23 @@ class SymbolData:
     def get_idx(self, d: date) -> Optional[int]:
         return self.date_to_idx.get(d)
 
-    def rolling_avg_volume(self, idx: int, lookback: int) -> tuple[float, bool]:
+    def rolling_avg_volume(self, idx: int, current_date: date, lookback: int, target_start_date: Optional[date] = None) -> tuple[float, bool]:
         """
-        Return (mean_volume, has_sufficient_history) for rows [idx-lookback .. idx-1].
+        Return (mean_volume, has_sufficient_history) for the strictly preceding `lookback` NSE trading days.
         idx itself is EXCLUDED (no lookahead).
         """
-        start = max(0, idx - lookback)
-        end = idx  # exclusive
-        prior_vols = self.volumes[start:end]
-        has_sufficient = (end - start) >= lookback
+        if target_start_date is None:
+            target_start_date = prev_trading_day(current_date, lookback)
+        
+        # Find index in self.dates for target_start_date
+        # np.searchsorted returns the index of the first element >= target_start_date
+        start_idx = np.searchsorted(self.dates, target_start_date)
+        end_idx = idx
+        
+        prior_vols = self.volumes[start_idx:end_idx]
+        
+        # The stock must have data for every single one of those `lookback` days
+        has_sufficient = (end_idx - start_idx) >= lookback
         if len(prior_vols) == 0:
             return 0.0, False
         return float(prior_vols.mean()), has_sufficient
@@ -155,11 +163,15 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
         for sym in symbols_to_exit:
             sd = sym_data.get(sym)
             if sd is None:
+                logger.error(f"{sym}: Symbol data entirely missing on exit day {current_day}. Trade unexecutable. Trapping capital.")
+                portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_entirely")
+                del pending_exits[sym]
                 continue
             exit_idx = sd.get_idx(current_day)
             if exit_idx is None:
-                logger.warning(f"{sym}: No data on exit day {current_day}, deferring exit to next day")
-                pending_exits[sym] = next_day
+                logger.error(f"{sym}: No data on strict scheduled exit day {current_day}. Trade unexecutable. Trapping capital.")
+                portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_on_exit_day")
+                del pending_exits[sym]
                 continue
             
             raw_exit = getattr_field(sd, execution.exit_price_field, exit_idx)
@@ -188,10 +200,12 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
             _, t_entry_price = pending_theoretical_exits[sym]
             sd = sym_data.get(sym)
             if sd is None:
+                del pending_theoretical_exits[sym]
                 continue
             exit_idx = sd.get_idx(current_day)
             if exit_idx is None:
-                pending_theoretical_exits[sym] = (next_day, t_entry_price)
+                # Theoretical trade is unexecutable. Remove it.
+                del pending_theoretical_exits[sym]
                 continue
             
             t_exit_raw = getattr_field(sd, execution.exit_price_field, exit_idx)
@@ -215,10 +229,8 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
         # ── 6b. SIGNAL: evaluate all symbols for today ────────────────────
         signals_today: list[tuple[str, SignalResult, float]] = []  # (sym, sig, entry_price)
 
-        # Shuffle symbols daily to remove alphabetical capital allocation bias
-        import random
-        symbols_today = list(sym_data.keys())
-        random.Random(current_day.toordinal()).shuffle(symbols_today)
+        target_start_date = prev_trading_day(current_day, strategy.volume_lookback)
+        symbols_today = sorted(sym_data.keys())
         for sym in symbols_today:
             sd = sym_data[sym]
             if sym in portfolio.open_positions:
@@ -229,7 +241,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 continue  # No data today
 
             # Compute rolling avg volume (prior lookback days only)
-            avg_vol, has_sufficient = sd.rolling_avg_volume(idx, strategy.volume_lookback)
+            avg_vol, has_sufficient = sd.rolling_avg_volume(idx, current_day, strategy.volume_lookback, target_start_date)
 
             sig = compute_signal(
                 open_=sd.opens[idx],
@@ -251,17 +263,14 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 signals_today.append((sym, sig, entry_price))
 
         # ── 6c. ENTRY: size and open positions ────────────────────────────
-        # Signals are already in alphabetical order (A→Z) so when cash is
-        # insufficient for all, we always take the earliest alphabetically.
-        # Per-trade allocation = 20% of *current* equity (not fixed initial capital),
-        # so it scales up/down automatically as the portfolio grows or shrinks.
+        # Rank signals by breakout strength score (descending) so trades that
+        # break the strategy conditions most strongly take the available slots.
+        signals_today.sort(key=lambda x: x[1].score, reverse=True)
+
         for sym, sig, entry_price in signals_today:
             # Record theoretical trade for "All Signals" metric
             if sym not in pending_theoretical_exits:
                 pending_theoretical_exits[sym] = (next_day, entry_price)
-
-            if len(pending_exits) + portfolio.open_positions_count >= sizing.max_positions:
-                continue  # No more slots
 
             current_equity = portfolio.equity()
             sizing_result = compute_position_size(
@@ -272,6 +281,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 current_gross_exposure=portfolio.gross_exposure,
                 avg_volume_20d=sig.avg_volume_20d,
                 params=sizing,
+                fees_cfg=fees_cfg,
             )
 
             if sizing_result.skipped:
@@ -419,8 +429,8 @@ def save_backtest_output(output_dict: dict) -> str:
         # Also write latest_run.json
         latest_path = os.path.join(output_dir, "latest_run.json")
         try:
-            with open(latest_path, "w", encoding="utf-8") as f:
-                json.dump(output_dict, f, cls=_NumpyEncoder, indent=2)
+            import shutil
+            shutil.copyfile(filepath, latest_path)
         except Exception:
             pass
 

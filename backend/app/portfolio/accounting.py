@@ -23,6 +23,7 @@ class Position:
     own_capital_used: float     # Own money allocated
     borrowed: float             # Margin borrowed
     leverage: float
+    entry_time: str = "15:20"
     initial_qty: int = 0
     partial_exits: list[dict] = field(default_factory=list)
 
@@ -48,12 +49,14 @@ class ClosedTrade:
     borrowed: float
     leverage: float
     exit_reason: str            # "next_open"
+    entry_time: str = "15:20"
     exits: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
             "symbol": self.symbol,
             "entry_date": str(self.entry_date),
+            "entry_time": self.entry_time,
             "exit_date": str(self.exit_date),
             "entry_price": round(self.entry_price, 4),
             "exit_price": round(self.exit_price, 4),
@@ -161,6 +164,7 @@ class Portfolio:
         own_capital_used: float,
         borrowed: float,
         leverage: float,
+        entry_time: str = "15:20",
     ) -> bool:
         """
         Open a new position. Returns True if successful.
@@ -187,12 +191,13 @@ class Portfolio:
             own_capital_used=own_capital_used,
             borrowed=borrowed,
             leverage=leverage,
+            entry_time=entry_time,
         )
 
         self._daily_buys.append({
             "symbol": symbol,
             "entry_date": str(entry_date),
-            "entry_time": "15:25",
+            "entry_time": entry_time,
             "entry_price": round(entry_price, 4),
             "qty": qty,
             "trade_value": round(qty * entry_price, 2),
@@ -211,6 +216,7 @@ class Portfolio:
         exit_price: float,
         exit_fees: float,
         exit_reason: str = "next_open",
+        exit_time: str = "09:15",
     ) -> Optional[ClosedTrade]:
         """
         Close an open position. Returns ClosedTrade or None if not found.
@@ -251,15 +257,16 @@ class Portfolio:
             borrowed=pos.borrowed,
             leverage=pos.leverage,
             exit_reason=exit_reason,
+            entry_time=pos.entry_time,
         )
         self.closed_trades.append(trade)
 
         self._daily_sells.append({
             "symbol": symbol,
             "entry_date": str(pos.entry_date),
-            "entry_time": "15:25",
+            "entry_time": pos.entry_time,
             "exit_date": str(exit_date),
-            "exit_time": "09:15",
+            "exit_time": exit_time,
             "entry_price": round(pos.entry_price, 4),
             "exit_price": round(exit_price, 4),
             "qty": pos.qty,
@@ -345,7 +352,7 @@ class Portfolio:
         self._daily_sells.append({
             "symbol": symbol,
             "entry_date": str(pos.entry_date),
-            "entry_time": "15:25",
+            "entry_time": pos.entry_time,
             "exit_date": str(exit_date),
             "exit_time": exit_time,
             "entry_price": round(pos.entry_price, 4),
@@ -397,6 +404,7 @@ class Portfolio:
                 borrowed=0.0,
                 leverage=pos.leverage,
                 exit_reason="partial_exit" if len(clean_legs) > 1 else exit_reason,
+                entry_time=pos.entry_time,
                 exits=clean_legs,
             )
             self.closed_trades.append(trade)
@@ -465,7 +473,7 @@ class Portfolio:
                 "symbol": sym,
                 "qty": pos.qty,
                 "entry_date": str(pos.entry_date),
-                "entry_time": "15:25",
+                "entry_time": pos.entry_time,
                 "entry_price": round(pos.entry_price, 4),
                 "current_price": round(mkt_price, 4),
                 "cost_basis": round(pos.cost_basis, 2),

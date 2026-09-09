@@ -40,7 +40,7 @@ class SymbolData:
     """Holds numpy arrays for a single symbol, aligned to trading calendar."""
     __slots__ = (
         "symbol", "dates", "opens", "highs", "lows", "closes", "volumes",
-        "date_to_idx", "prices_1500"
+        "date_to_idx", "prices_by_time"
     )
 
     def __init__(self, symbol: str, df: pd.DataFrame):
@@ -52,10 +52,36 @@ class SymbolData:
         self.closes = df["close"].to_numpy(dtype=np.float64)
         self.volumes = df["volume"].to_numpy(dtype=np.float64)
         self.date_to_idx: dict[date, int] = {d: i for i, d in enumerate(self.dates)}
-        if "price_1500" in df.columns:
-            self.prices_1500 = df["price_1500"].to_numpy(dtype=np.float64)
-        else:
-            self.prices_1500 = self.closes.copy()
+
+        self.prices_by_time: dict[str, np.ndarray] = {
+            "09:15": self.opens,
+            "15:25": self.closes,
+        }
+        for col in df.columns:
+            if col.startswith("price_"):
+                # e.g. price_0920 -> key "09:20", price_1500 -> key "15:00"
+                t_str = col.replace("price_", "")
+                if len(t_str) == 4:
+                    hh_mm = f"{t_str[:2]}:{t_str[2:]}"
+                    self.prices_by_time[hh_mm] = df[col].to_numpy(dtype=np.float64)
+
+    @property
+    def prices_1500(self) -> np.ndarray:
+        return self.prices_by_time.get("15:00", self.closes)
+
+    def get_price_at_time(self, time_str: str, idx: int) -> float:
+        """Get price at specified time for row idx, with intelligent fallback."""
+        from app.strategy.params import normalize_time_str
+        t = normalize_time_str(time_str)
+        arr = self.prices_by_time.get(t)
+        if arr is not None:
+            return float(arr[idx])
+        # Fallback to closest available time
+        if t <= "09:15":
+            return float(self.opens[idx])
+        if t >= "15:20":
+            return float(self.closes[idx])
+        return float(self.opens[idx])
 
     def get_idx(self, d: date) -> Optional[int]:
         return self.date_to_idx.get(d)
@@ -107,7 +133,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
     logger.info(f"Loading {len(symbols)} symbols...")
     if progress_callback:
         progress_callback(f"Loading {len(symbols)} symbols from parquet...")
-    raw_data = load_symbols_bulk(symbols, workers=8, progress_callback=progress_callback)
+    raw_data = load_symbols_bulk(symbols, workers=8, signal_time=config.signal_time, progress_callback=progress_callback)
     logger.info(f"Loaded {len(raw_data)} symbols successfully.")
 
     if progress_callback:
@@ -190,37 +216,37 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 orig_qty = pos.initial_qty if pos.initial_qty > 0 else pos.qty
                 first_qty = math.floor(orig_qty * (config.partial_exit.first_pct / 100.0))
 
-                # Leg 1: Exit first_qty at 09:15
+                # Leg 1: Exit first_qty at first_time
                 if first_qty > 0:
-                    raw_exit_0915 = getattr_field(sd, execution.exit_price_field, exit_idx)
-                    exit_price_0915 = apply_slippage(raw_exit_0915, execution.exit_slippage_pct, "sell")
-                    exit_trade_value_0915 = exit_price_0915 * first_qty
-                    exit_fees_0915 = compute_fees(exit_trade_value_0915, "sell", fees_cfg)
+                    raw_exit_1 = sd.get_price_at_time(config.partial_exit.first_time, exit_idx)
+                    exit_price_1 = apply_slippage(raw_exit_1, execution.exit_slippage_pct, "sell")
+                    exit_trade_value_1 = exit_price_1 * first_qty
+                    exit_fees_1 = compute_fees(exit_trade_value_1, "sell", fees_cfg)
                     portfolio.partial_exit_trade(
                         symbol=sym,
                         exit_date=current_day,
-                        exit_price=exit_price_0915,
+                        exit_price=exit_price_1,
                         exit_qty=first_qty,
-                        exit_fees=exit_fees_0915,
+                        exit_fees=exit_fees_1,
                         exit_time=config.partial_exit.first_time,
                         exit_reason="partial_exit_first",
                         exit_slippage=execution.exit_slippage_pct,
                     )
 
-                # Leg 2: Exit remaining quantity at 15:00
+                # Leg 2: Exit remaining quantity at second_time
                 pos_after = portfolio.open_positions.get(sym)
                 rem_qty = pos_after.qty if pos_after else 0
                 if rem_qty > 0:
-                    raw_exit_1500 = float(sd.prices_1500[exit_idx])
-                    exit_price_1500 = apply_slippage(raw_exit_1500, execution.exit_slippage_pct, "sell")
-                    exit_trade_value_1500 = exit_price_1500 * rem_qty
-                    exit_fees_1500 = compute_fees(exit_trade_value_1500, "sell", fees_cfg)
+                    raw_exit_2 = sd.get_price_at_time(config.partial_exit.second_time, exit_idx)
+                    exit_price_2 = apply_slippage(raw_exit_2, execution.exit_slippage_pct, "sell")
+                    exit_trade_value_2 = exit_price_2 * rem_qty
+                    exit_fees_2 = compute_fees(exit_trade_value_2, "sell", fees_cfg)
                     portfolio.partial_exit_trade(
                         symbol=sym,
                         exit_date=current_day,
-                        exit_price=exit_price_1500,
+                        exit_price=exit_price_2,
                         exit_qty=rem_qty,
-                        exit_fees=exit_fees_1500,
+                        exit_fees=exit_fees_2,
                         exit_time=config.partial_exit.second_time,
                         exit_reason="partial_exit_second",
                         exit_slippage=execution.exit_slippage_pct,
@@ -242,11 +268,14 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                     del pending_exits[sym]
                     continue
                 
-                raw_exit = getattr_field(sd, execution.exit_price_field, exit_idx)
-                exit_raw = raw_exit
+                exit_time_val = getattr(execution, "exit_time", "09:15") or "09:15"
+                if exit_time_val and exit_time_val != "09:15" and execution.exit_price_field == "open":
+                    raw_exit = sd.get_price_at_time(exit_time_val, exit_idx)
+                else:
+                    raw_exit = getattr_field(sd, execution.exit_price_field, exit_idx)
 
                 # Apply exit slippage (sell)
-                exit_price = apply_slippage(exit_raw, execution.exit_slippage_pct, "sell")
+                exit_price = apply_slippage(raw_exit, execution.exit_slippage_pct, "sell")
                 exit_trade_value = exit_price * (portfolio.open_positions.get(sym, None) and portfolio.open_positions[sym].qty or 0)
                 exit_fees = compute_fees(exit_trade_value, "sell", fees_cfg)
 
@@ -255,7 +284,8 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                     exit_date=current_day,
                     exit_price=exit_price,
                     exit_fees=exit_fees,
-                    exit_reason="next_open",
+                    exit_reason=f"exit_{exit_time_val}",
+                    exit_time=exit_time_val,
                 )
                 del pending_exits[sym]
 
@@ -277,9 +307,9 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 continue
             
             if config.partial_exit and config.partial_exit.enabled:
-                t_exit_raw_1 = getattr_field(sd, execution.exit_price_field, exit_idx)
+                t_exit_raw_1 = sd.get_price_at_time(config.partial_exit.first_time, exit_idx)
                 t_exit_price_1 = apply_slippage(t_exit_raw_1, execution.exit_slippage_pct, "sell")
-                t_exit_raw_2 = float(sd.prices_1500[exit_idx])
+                t_exit_raw_2 = sd.get_price_at_time(config.partial_exit.second_time, exit_idx)
                 t_exit_price_2 = apply_slippage(t_exit_raw_2, execution.exit_slippage_pct, "sell")
 
                 qty = max(1, int(sizing.initial_capital / t_entry_price))
@@ -295,7 +325,11 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
                 theoretical_closed_returns.append(ret_pct)
             else:
-                t_exit_raw = getattr_field(sd, execution.exit_price_field, exit_idx)
+                exit_time_val = getattr(execution, "exit_time", "09:15") or "09:15"
+                if exit_time_val and exit_time_val != "09:15" and execution.exit_price_field == "open":
+                    t_exit_raw = sd.get_price_at_time(exit_time_val, exit_idx)
+                else:
+                    t_exit_raw = getattr_field(sd, execution.exit_price_field, exit_idx)
                 t_exit_price = apply_slippage(t_exit_raw, execution.exit_slippage_pct, "sell")
                 
                 # Simulate a trade proportional to initial capital for accurate % fees
@@ -392,6 +426,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 own_capital_used=sizing_result.own_capital_used,
                 borrowed=sizing_result.borrowed,
                 leverage=sizing.leverage,
+                entry_time=execution.entry_time,
             )
 
             if success:
@@ -424,7 +459,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                         exit_price=exit_price,
                         exit_qty=pos.qty,
                         exit_fees=exit_fees,
-                        exit_time="15:25",
+                        exit_time=execution.entry_time,
                         exit_reason="backtest_end",
                         exit_slippage=execution.exit_slippage_pct,
                     )
@@ -435,6 +470,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                         exit_price=exit_price,
                         exit_fees=exit_fees,
                         exit_reason="backtest_end",
+                        exit_time=execution.entry_time,
                     )
             pending_exits.clear()
 
@@ -483,7 +519,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                     exit_price=exit_price,
                     exit_qty=pos.qty,
                     exit_fees=exit_fees,
-                    exit_time="15:25",
+                    exit_time=execution.entry_time,
                     exit_reason="backtest_end",
                     exit_slippage=execution.exit_slippage_pct,
                 )
@@ -494,6 +530,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                     exit_price=exit_price,
                     exit_fees=exit_fees,
                     exit_reason="backtest_end",
+                    exit_time=execution.entry_time,
                 )
         if portfolio.daily_snapshots:
             portfolio.daily_snapshots[-1].equity = portfolio.cash
@@ -586,7 +623,8 @@ def save_backtest_output(output_dict: dict) -> str:
 
 
 def getattr_field(sd: SymbolData, field: str, idx: int) -> float:
-    """Get OHLCV field by name from SymbolData."""
+    """Get OHLCV field by name or time string from SymbolData."""
+    fl = field.lower()
     mapping = {
         "open": sd.opens,
         "high": sd.highs,
@@ -594,5 +632,6 @@ def getattr_field(sd: SymbolData, field: str, idx: int) -> float:
         "close": sd.closes,
         "price_1500": sd.prices_1500,
     }
-    arr = mapping.get(field.lower(), sd.closes)
-    return float(arr[idx])
+    if fl in mapping:
+        return float(mapping[fl][idx])
+    return sd.get_price_at_time(field, idx)

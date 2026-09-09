@@ -62,9 +62,21 @@ document.getElementById("btn-run").addEventListener("click", async () => {
     const peEnabled = document.getElementById("cfg-partial-exit-enabled")?.checked || false;
     const peFirstPct = parseFloat(document.getElementById("cfg-partial-first-pct")?.value || 50.0);
     const peSecondPct = Math.max(0, 100.0 - peFirstPct);
+    const peFirstTime = document.getElementById("cfg-partial-first-time")?.value || "09:15";
+    const peSecondTime = document.getElementById("cfg-partial-second-time")?.value || "15:00";
+    const fullExitTime = document.getElementById("cfg-exit-time")?.value || "09:15";
+
+    if (peEnabled && peFirstTime >= peSecondTime) {
+      alert(`Invalid partial exit times: Leg 1 (${peFirstTime}) must be strictly earlier than Leg 2 (${peSecondTime}).`);
+      loadingModal.style.display = "none";
+      return;
+    }
+
+    const signalTime = document.getElementById("cfg-signal-time")?.value || "15:20";
 
     const config = {
       ...baseConfig,
+      signal_time: signalTime,
       strategy: {
         ...baseConfig.strategy,
         min_range_pct: parseFloat(document.getElementById("cfg-range").value),
@@ -73,6 +85,11 @@ document.getElementById("btn-run").addEventListener("click", async () => {
         volume_lookback: parseInt(document.getElementById("cfg-vol-lookback").value, 10),
         volume_multiplier: parseFloat(document.getElementById("cfg-vol-mult").value),
       },
+      execution: {
+        ...baseConfig.execution,
+        exit_time: fullExitTime,
+        entry_time: signalTime,
+      },
       sizing: {
         ...baseConfig.sizing,
         max_volume_pct: parseFloat(document.getElementById("cfg-vol-pct").value)
@@ -80,9 +97,9 @@ document.getElementById("btn-run").addEventListener("click", async () => {
       partial_exit: {
         partial_exit_enabled: peEnabled,
         partial_exit_first_pct: peFirstPct,
-        partial_exit_first_time: "09:15",
+        partial_exit_first_time: peFirstTime,
         partial_exit_second_pct: peSecondPct,
-        partial_exit_second_time: "15:00",
+        partial_exit_second_time: peSecondTime,
       },
       start_date: document.getElementById("cfg-start").value || null,
       end_date: document.getElementById("cfg-end").value || null,
@@ -168,11 +185,11 @@ function badgePnl(val, isCurrency = true) {
   return `<span class="badge ${cls}">${sign}${formatted}</span>`;
 }
 
-// Global store for ledger data
 // Global store for ledger and trades data
 let currentDailyData = [];
 let currentTradesData = [];
 let currentMetrics = {};
+let currentSignalTime = "15:20";
 let expandedDates = new Set();
 let ledgerPage = 1;
 let tradesPage = 1;
@@ -185,9 +202,18 @@ function displayResults(result, elapsedSec) {
   currentMetrics = m;
   currentDailyData = result.daily || [];
   currentTradesData = result.trades || [];
+  currentSignalTime = result.config?.signal_time || result.config?.execution?.entry_time || "15:20";
   expandedDates.clear();
   ledgerPage = 1;
   tradesPage = 1;
+
+  // Sync dropdown and column header to signal time
+  const selSignal = document.getElementById("cfg-signal-time");
+  if (selSignal && (result.config?.signal_time || result.config?.execution?.entry_time)) {
+    selSignal.value = currentSignalTime;
+  }
+  const thBuys = document.getElementById("th-buys-label");
+  if (thBuys) thBuys.textContent = `Buys (${currentSignalTime})`;
   
   document.getElementById("results-content").classList.remove("hidden");
   
@@ -452,13 +478,13 @@ function renderLedgerDetailRow(d) {
   // Buys items
   let buysHtml = "";
   if (!d.buys || d.buys.length === 0) {
-    buysHtml = `<div class="detail-empty">No buys executed on this day (15:25 IST)</div>`;
+    buysHtml = `<div class="detail-empty">No buys executed on this day (${currentSignalTime} IST)</div>`;
   } else {
     buysHtml = d.buys.map(b => `
       <div class="detail-item">
         <div>
           <span class="font-bold" style="color:#60a5fa">${b.symbol}</span>
-          <span style="color:var(--text-muted); margin-left:4px">Qty: ${b.qty} @ ₹${fmt(b.entry_price)}</span>
+          <span style="color:var(--text-muted); margin-left:4px">Qty: ${b.qty} @ ₹${fmt(b.entry_price)} <span class="neutral" style="font-size:10px">${b.entry_time || currentSignalTime}</span></span>
         </div>
         <div class="text-right">
           <div class="font-mono font-bold">${fmtINR(b.trade_value)}</div>
@@ -528,7 +554,7 @@ function renderLedgerDetailRow(d) {
             <!-- Buys Today -->
             <div class="detail-card">
               <div class="detail-card-header">
-                <span class="detail-card-title">🛒 Buys Today (15:25 IST)</span>
+                <span class="detail-card-title">🛒 Buys Today (${currentSignalTime} IST)</span>
                 <span class="badge badge-buy">${(d.buys && d.buys.length) || 0}</span>
               </div>
               <div class="detail-list">${buysHtml}</div>
@@ -620,13 +646,13 @@ function renderTradesRows() {
     return `
       <tr>
         <td><strong>${t.symbol}</strong> <span class="badge ${badgeCls}">${isWin ? 'WIN' : 'LOSS'}</span></td>
-        <td>${t.entry_date} <span class="neutral" style="font-size:11px">15:25</span></td>
+        <td>${t.entry_date} <span class="neutral" style="font-size:11px">${t.entry_time || currentSignalTime}</span></td>
         <td>
           ${t.exit_date} 
           <span class="neutral" style="font-size:11px">
             ${t.exits && t.exits.length > 1 
-              ? `<span class="badge" style="background:rgba(41,98,255,0.15); color:#2962ff; font-size:10px; cursor:help;" title="Leg 1: ${t.exits[0].qty} shares @ ₹${fmt(t.exits[0].exit_price)} (09:15) | Leg 2: ${t.exits[1].qty} shares @ ₹${fmt(t.exits[1].exit_price)} (15:00)">PARTIAL</span>`
-              : (t.exit_reason === 'backtest_end' ? '15:25 (End)' : '09:15')}
+              ? `<span class="badge" style="background:rgba(41,98,255,0.15); color:#2962ff; font-size:10px; cursor:help;" title="${t.exits.map((e, idx) => `Leg ${idx+1}: ${e.qty} shares @ ₹${fmt(e.exit_price)} (${e.exit_time || 'IST'})`).join(' | ')}">PARTIAL</span>`
+              : (t.exit_reason === 'backtest_end' ? `${t.exit_time || currentSignalTime} (End)` : (t.exits && t.exits[0] ? t.exits[0].exit_time : (t.exit_reason ? t.exit_reason.replace('exit_', '') : '09:15')))}
           </span>
         </td>
         <td class="font-mono font-bold">${t.qty}</td>
@@ -926,10 +952,32 @@ const peCheckbox = document.getElementById("cfg-partial-exit-enabled");
 const peDetails = document.getElementById("partial-exit-details");
 const peFirstInput = document.getElementById("cfg-partial-first-pct");
 const peSecondInput = document.getElementById("cfg-partial-second-pct");
+const peFirstTime = document.getElementById("cfg-partial-first-time");
+const peSecondTime = document.getElementById("cfg-partial-second-time");
+const peWarning = document.getElementById("partial-exit-warning");
+const fullExitGroup = document.getElementById("group-full-exit-time");
+
+function validateExitTimes() {
+  if (!peCheckbox || !peCheckbox.checked) {
+    if (peWarning) peWarning.style.display = "none";
+    if (fullExitGroup) fullExitGroup.style.opacity = "1";
+    return true;
+  }
+  if (fullExitGroup) fullExitGroup.style.opacity = "0.4";
+  if (peFirstTime && peSecondTime) {
+    const t1 = peFirstTime.value;
+    const t2 = peSecondTime.value;
+    const invalid = t1 >= t2;
+    if (peWarning) peWarning.style.display = invalid ? "block" : "none";
+    return !invalid;
+  }
+  return true;
+}
 
 if (peCheckbox && peDetails) {
   peCheckbox.addEventListener("change", () => {
     peDetails.style.display = peCheckbox.checked ? "block" : "none";
+    validateExitTimes();
   });
 }
 
@@ -940,5 +988,21 @@ if (peFirstInput && peSecondInput) {
     if (v < 1) v = 1;
     if (v > 99) v = 99;
     peSecondInput.value = (100 - v).toFixed(0);
+  });
+}
+
+if (peFirstTime && peSecondTime) {
+  peFirstTime.addEventListener("change", validateExitTimes);
+  peSecondTime.addEventListener("change", validateExitTimes);
+}
+
+validateExitTimes();
+
+const sigTimeEl = document.getElementById("cfg-signal-time");
+if (sigTimeEl) {
+  sigTimeEl.addEventListener("change", (e) => {
+    currentSignalTime = e.target.value;
+    const thBuys = document.getElementById("th-buys-label");
+    if (thBuys) thBuys.textContent = `Buys (${currentSignalTime})`;
   });
 }

@@ -89,23 +89,93 @@
           <input type="date" id="cfg-end" class="input-field" value="2022-12-31" />
         </div>
 
+        <div class="form-group" id="group-signal-time">
+          <label>Signal Check / Entry Time</label>
+          <select id="cfg-signal-time" class="input-field">
+            <option value="15:20" selected>15:20 IST (Groww 3:20–3:25 PM Window)</option>
+            <option value="15:25">15:25 IST (3:25 PM Candle Close)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="group-full-exit-time">
+          <label>Exit Time (Full Exit)</label>
+          <select id="cfg-exit-time" class="input-field">
+            <option value="09:15" selected>09:15 IST (Market Open)</option>
+            <option value="09:20">09:20 IST (5 min candle)</option>
+            <option value="09:25">09:25 IST (10 min candle)</option>
+            <option value="09:30">09:30 IST (15 min candle)</option>
+            <option value="09:45">09:45 IST (30 min candle)</option>
+            <option value="10:00">10:00 IST</option>
+            <option value="11:00">11:00 IST</option>
+            <option value="12:00">12:00 IST</option>
+            <option value="13:00">13:00 IST</option>
+            <option value="14:00">14:00 IST</option>
+            <option value="15:00">15:00 IST (3:00 PM)</option>
+            <option value="15:20">15:20 IST (Pre-close)</option>
+          </select>
+        </div>
+
         <!-- Partial Exit (Optional) -->
         <div class="form-group" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08);">
           <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
             <label for="cfg-partial-exit-enabled" style="font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0;">
-              <input type="checkbox" id="cfg-partial-exit-enabled" style="width: 16px; height: 16px; accent-color: var(--accent, #2962ff); cursor: pointer;" />
-              <span>Partial Exit (09:15 / 15:00)</span>
+              <input type="checkbox" id="cfg-partial-exit-enabled" onchange="document.getElementById('partial-exit-details').style.display = this.checked ? 'block' : 'none';" style="width: 16px; height: 16px; accent-color: var(--accent, #2962ff); cursor: pointer;" />
+              <span>Partial Exit (Multi-stage)</span>
             </label>
             <span class="badge" style="font-size: 10px; padding: 2px 6px; background: rgba(41,98,255,0.15); color: #2962ff; border-radius: 4px;">OPTIONAL</span>
           </div>
-          <div id="partial-exit-details" style="display: none; background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; margin-top: 8px; border: 1px solid rgba(255,255,255,0.06);">
-            <div class="form-group" style="margin-bottom: 8px;">
-              <label style="font-size: 11px;">1st Exit % (at 09:15 IST)</label>
-              <input type="number" id="cfg-partial-first-pct" class="input-field" value="50" min="1" max="99" step="1" />
+          <div id="partial-exit-details" style="display: none; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 6px; margin-top: 8px; border: 1px solid rgba(255,255,255,0.06);">
+            <div style="margin-bottom: 12px;">
+              <div style="font-size: 11px; font-weight: 600; color: #8899a6; margin-bottom: 4px;">LEG 1 EXIT</div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <label style="font-size: 10px; color: #8899a6;">Exit %</label>
+                  <input type="number" id="cfg-partial-first-pct" class="input-field" value="50" min="1" max="99" step="1" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; color: #8899a6;">Time (IST)</label>
+                  <select id="cfg-partial-first-time" class="input-field">
+                    <option value="09:15" selected>09:15 (Open)</option>
+                    <option value="09:20">09:20</option>
+                    <option value="09:25">09:25</option>
+                    <option value="09:30">09:30</option>
+                    <option value="09:45">09:45</option>
+                    <option value="10:00">10:00</option>
+                    <option value="11:00">11:00</option>
+                    <option value="12:00">12:00</option>
+                    <option value="13:00">13:00</option>
+                    <option value="14:00">14:00</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label style="font-size: 11px;">2nd Exit % (at 15:00 IST)</label>
-              <input type="number" id="cfg-partial-second-pct" class="input-field" value="50" min="1" max="99" step="1" readonly style="opacity: 0.7; cursor: not-allowed;" />
+            <div>
+              <div style="font-size: 11px; font-weight: 600; color: #8899a6; margin-bottom: 4px;">LEG 2 EXIT</div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div>
+                  <label style="font-size: 10px; color: #8899a6;">Remaining %</label>
+                  <input type="number" id="cfg-partial-second-pct" class="input-field" value="50" min="1" max="99" step="1" readonly style="opacity: 0.7; cursor: not-allowed;" />
+                </div>
+                <div>
+                  <label style="font-size: 10px; color: #8899a6;">Time (IST)</label>
+                  <select id="cfg-partial-second-time" class="input-field">
+                    <option value="09:20">09:20</option>
+                    <option value="09:25">09:25</option>
+                    <option value="09:30">09:30</option>
+                    <option value="09:45">09:45</option>
+                    <option value="10:00">10:00</option>
+                    <option value="11:00">11:00</option>
+                    <option value="12:00">12:00</option>
+                    <option value="13:00">13:00</option>
+                    <option value="14:00">14:00</option>
+                    <option value="15:00" selected>15:00 (3 PM)</option>
+                    <option value="15:20">15:20 (Pre-close)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div id="partial-exit-warning" style="display:none; color: #ff5252; font-size: 10px; margin-top: 6px;">
+              * Leg 2 time must be strictly after Leg 1 time.
             </div>
           </div>
         </div>
@@ -326,7 +396,7 @@
                   <th class="text-right">Invested Capital</th>
                   <th class="text-right">Today's P&L</th>
                   <th class="text-right">Today's DD</th>
-                  <th class="text-center">Buys (15:25)</th>
+                  <th class="text-center" id="th-buys-label">Buys (15:20)</th>
                   <th class="text-center">Sells (09:15)</th>
                   <th class="text-center">Holdings</th>
                   <th class="text-center" style="width: 80px;">Details</th>

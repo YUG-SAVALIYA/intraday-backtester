@@ -7,84 +7,113 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from app.data.loader import get_available_symbols
-from app.strategy.params import BacktestConfig, PartialExitParams
+from app.strategy.params import BacktestConfig, PartialExitParams, ExecutionParams
 from app.execution.engine import run_backtest
 
 def main():
-    syms = get_available_symbols()[:20]
+    syms = get_available_symbols()[:25]
     print(f"Running comparison on {len(syms)} symbols...")
 
-    # 1. Baseline (Feature OFF)
-    cfg_off = BacktestConfig(
-        symbols=syms,
-        start_date="2024-01-01",
-        end_date="2024-06-30",
-        partial_exit=PartialExitParams(partial_exit_enabled=False),
-    )
-    res_off = run_backtest(cfg_off)
-
-    # 2. Feature ON
-    cfg_on = BacktestConfig(
-        symbols=syms,
-        start_date="2024-01-01",
-        end_date="2024-06-30",
-        partial_exit=PartialExitParams(
-            partial_exit_enabled=True,
-            partial_exit_first_pct=50.0,
-            partial_exit_first_time="09:15",
-            partial_exit_second_pct=50.0,
-            partial_exit_second_time="15:00",
+    scenarios = {
+        "09:15 Full (Baseline)": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            execution=ExecutionParams(exit_time="09:15"),
+            partial_exit=PartialExitParams(partial_exit_enabled=False),
         ),
-    )
-    res_on = run_backtest(cfg_on)
+        "09:20 Full Exit": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            execution=ExecutionParams(exit_time="09:20"),
+            partial_exit=PartialExitParams(partial_exit_enabled=False),
+        ),
+        "09:30 Full Exit": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            execution=ExecutionParams(exit_time="09:30"),
+            partial_exit=PartialExitParams(partial_exit_enabled=False),
+        ),
+        "50% @ 09:15 + 50% @ 09:20": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            partial_exit=PartialExitParams(
+                partial_exit_enabled=True,
+                partial_exit_first_pct=50.0,
+                partial_exit_first_time="09:15",
+                partial_exit_second_pct=50.0,
+                partial_exit_second_time="09:20",
+            ),
+        ),
+        "50% @ 09:15 + 50% @ 09:30": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            partial_exit=PartialExitParams(
+                partial_exit_enabled=True,
+                partial_exit_first_pct=50.0,
+                partial_exit_first_time="09:15",
+                partial_exit_second_pct=50.0,
+                partial_exit_second_time="09:30",
+            ),
+        ),
+        "50% @ 09:15 + 50% @ 15:00": BacktestConfig(
+            symbols=syms,
+            start_date="2024-01-01",
+            end_date="2024-06-30",
+            partial_exit=PartialExitParams(
+                partial_exit_enabled=True,
+                partial_exit_first_pct=50.0,
+                partial_exit_first_time="09:15",
+                partial_exit_second_pct=50.0,
+                partial_exit_second_time="15:00",
+            ),
+        ),
+    }
 
-    print("\n" + "=" * 70)
-    print("BACKTEST COMPARISON: FEATURE OFF vs FEATURE ON")
-    print("=" * 70)
-    print(f"{'Metric':<30} | {'Feature OFF (Baseline)':<20} | {'Feature ON (Partial Exit)':<20}")
-    print("-" * 75)
-    m_off = res_off["metrics"]
-    m_on = res_on["metrics"]
-    keys = ["n_trades", "win_rate_pct", "profit_factor", "total_net_pnl", "total_fees", "final_equity", "cagr_pct", "max_drawdown_pct"]
-    for k in keys:
-        v_off = m_off.get(k, 0)
-        v_on = m_on.get(k, 0)
-        print(f"{k:<30} | {v_off:<20} | {v_on:<20}")
+    results = {}
+    for name, cfg in scenarios.items():
+        results[name] = run_backtest(cfg)
 
-    print("\n" + "=" * 70)
-    print("EXAMPLE TRADE WITH PARTIAL EXITS (09:15 + 15:00)")
-    print("=" * 70)
-    # Find a trade with 2 exits
+    print("\n" + "=" * 90)
+    print("BACKTEST EXIT STRATEGY COMPARISON")
+    print("=" * 90)
+    header = f"{'Scenario':<28} | {'Trades':<7} | {'Win Rate':<9} | {'Net P&L (Rs)':<12} | {'Return %':<9} | {'Max DD %':<9}"
+    print(header)
+    print("-" * 90)
+    for name, res in results.items():
+        m = res["metrics"]
+        print(
+            f"{name:<28} | "
+            f"{m['n_trades']:<7} | "
+            f"{m['win_rate_pct']:.1f}%{'':<3} | "
+            f"Rs.{m['total_net_pnl']:<9.2f} | "
+            f"{m['total_return_pct']:<8.2f}% | "
+            f"{m['max_drawdown_pct']:<8.2f}%"
+        )
+
+    # Show a detailed sample trade from the 09:15 + 09:30 scenario
+    res_930 = results["50% @ 09:15 + 50% @ 09:30"]
     sample_trade = None
-    for t in res_on["trades"]:
+    for t in res_930["trades"]:
         if len(t.get("exits", [])) == 2:
             sample_trade = t
             break
 
     if sample_trade:
+        print("\n" + "=" * 70)
+        print("SAMPLE PARTIAL EXIT TRADE (09:15 + 09:30)")
+        print("=" * 70)
         print(f"Symbol: {sample_trade['symbol']}")
         print(f"Entry Date: {sample_trade['entry_date']} @ 15:25 IST")
         print(f"Entry Price: Rs. {sample_trade['entry_price']}")
-        print(f"Original Qty: {sample_trade['qty']} shares")
-        print(f"Original Entry Fees: Rs. {sample_trade['entry_fees']}")
-        print("\nPartial Exits Breakdown:")
+        print(f"Total Qty: {sample_trade['qty']} shares")
         for idx, leg in enumerate(sample_trade["exits"], start=1):
-            print(f"  Leg {idx} ({leg['exit_time']} IST on {leg['exit_date']}):")
-            print(f"    - Exit Qty: {leg['qty']} shares")
-            print(f"    - Exit Price: Rs. {leg['exit_price']}")
-            print(f"    - Gross P&L: Rs. {leg['gross_pnl']}")
-            print(f"    - Allocated Entry Fees: Rs. {leg['entry_fees']}")
-            print(f"    - Exit Fees: Rs. {leg['exit_fees']}")
-            print(f"    - Leg Net P&L: Rs. {leg['net_pnl']}")
-        print("\nAggregated Parent Trade:")
-        print(f"  - Avg Exit Price: Rs. {sample_trade['exit_price']}")
-        print(f"  - Total Gross P&L: Rs. {sample_trade['gross_pnl']}")
-        print(f"  - Total Entry Fees: Rs. {sample_trade['entry_fees']}")
-        print(f"  - Total Exit Fees: Rs. {sample_trade['exit_fees']}")
-        print(f"  - Parent Net P&L: Rs. {sample_trade['net_pnl']}")
-        print(f"  - Return %: {sample_trade['return_pct']}%")
-    else:
-        print("No 2-leg trade found.")
+            print(f"  Leg {idx} ({leg['exit_time']} IST on {leg['exit_date']}): {leg['qty']} shares @ Rs. {leg['exit_price']} -> Net P&L: Rs. {leg['net_pnl']}")
+        print(f"Aggregated Trade Net P&L: Rs. {sample_trade['net_pnl']} ({sample_trade['return_pct']}%)")
 
 if __name__ == "__main__":
     main()

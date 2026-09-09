@@ -22,12 +22,14 @@ class StrategyParams:
 @dataclass
 class ExecutionParams:
     """Trade execution configuration."""
-    # Entry: price to use on signal day (15:25 close)
+    # Entry: price to use on signal day (default 15:20 close)
     entry_price_field: str = "close"   # "close", "open", "high", "low"
+    entry_time: str = "15:20"          # Signal check and entry time ("15:20" or "15:25")
     entry_slippage_pct: float = 0.05   # % slippage on entry (0.05 = 5 bps)
 
-    # Exit: next trading day open
-    exit_price_field: str = "open"     # field from next day row
+    # Exit: next trading day open or selected exit time
+    exit_price_field: str = "open"     # field from next day row ("open", "price_0920", etc.)
+    exit_time: str = "09:15"           # Exit time for single/full exit (e.g. "09:15", "09:20", "09:30", "15:00")
     exit_slippage_pct: float = 0.05    # % slippage on exit
 
 
@@ -70,6 +72,33 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 
+def normalize_time_str(t: str) -> str:
+    """Normalize a time string to standard 24-hour 'HH:MM' format."""
+    if not t:
+        return "09:15"
+    s = str(t).strip().lower()
+    if s in ("open", "market_open"):
+        return "09:15"
+    if s in ("close", "market_close"):
+        return "15:25"
+    if s in ("3pm", "3:00pm", "3:00 pm", "1500"):
+        return "15:00"
+    if ":" in s:
+        parts = s.split(":")
+        try:
+            hh = int(parts[0])
+            mm_str = parts[1][:2]
+            mm = int(mm_str)
+            if "pm" in s and hh < 12:
+                hh += 12
+            return f"{hh:02d}:{mm:02d}"
+        except Exception:
+            return s
+    if len(s) == 4 and s.isdigit():
+        return f"{s[:2]}:{s[2:]}"
+    return s
+
+
 @dataclass
 class PartialExitParams:
     """Configuration for optional partial exits."""
@@ -93,39 +122,39 @@ class PartialExitParams:
         second_time: Optional[str] = None,
     ):
         if partial_exit_enabled is not None:
-            self.partial_exit_enabled = partial_exit_enabled
+            self.partial_exit_enabled = bool(partial_exit_enabled)
         elif enabled is not None:
-            self.partial_exit_enabled = enabled
+            self.partial_exit_enabled = bool(enabled)
         else:
             self.partial_exit_enabled = False
 
         if partial_exit_first_pct is not None:
-            self.partial_exit_first_pct = partial_exit_first_pct
+            self.partial_exit_first_pct = float(partial_exit_first_pct)
         elif first_pct is not None:
-            self.partial_exit_first_pct = first_pct
+            self.partial_exit_first_pct = float(first_pct)
         else:
             self.partial_exit_first_pct = 50.0
 
+        raw_first_time = "09:15"
         if partial_exit_first_time is not None:
-            self.partial_exit_first_time = partial_exit_first_time
+            raw_first_time = str(partial_exit_first_time)
         elif first_time is not None:
-            self.partial_exit_first_time = first_time
-        else:
-            self.partial_exit_first_time = "09:15"
+            raw_first_time = str(first_time)
+        self.partial_exit_first_time = normalize_time_str(raw_first_time)
 
         if partial_exit_second_pct is not None:
-            self.partial_exit_second_pct = partial_exit_second_pct
+            self.partial_exit_second_pct = float(partial_exit_second_pct)
         elif second_pct is not None:
-            self.partial_exit_second_pct = second_pct
+            self.partial_exit_second_pct = float(second_pct)
         else:
             self.partial_exit_second_pct = 50.0
 
+        raw_second_time = "15:00"
         if partial_exit_second_time is not None:
-            self.partial_exit_second_time = partial_exit_second_time
+            raw_second_time = str(partial_exit_second_time)
         elif second_time is not None:
-            self.partial_exit_second_time = second_time
-        else:
-            self.partial_exit_second_time = "15:00"
+            raw_second_time = str(second_time)
+        self.partial_exit_second_time = normalize_time_str(raw_second_time)
 
     @property
     def enabled(self) -> bool:
@@ -182,6 +211,9 @@ class BacktestConfig:
     fees: FeeParams = field(default_factory=FeeParams)
     partial_exit: PartialExitParams = field(default_factory=PartialExitParams)
 
+    # Signal check and entry time ("15:20" or "15:25")
+    signal_time: str = "15:20"
+
     # Date range
     start_date: Optional[str] = None   # ISO date string "YYYY-MM-DD"
     end_date: Optional[str] = None
@@ -199,6 +231,14 @@ class BacktestConfig:
             cfg.strategy = StrategyParams(**d["strategy"])
         if "execution" in d:
             cfg.execution = ExecutionParams(**d["execution"])
+        elif "exit_time" in d:
+            cfg.execution.exit_time = str(d["exit_time"])
+        if "signal_time" in d:
+            cfg.signal_time = str(d["signal_time"])
+        elif "execution" in d and "entry_time" in d["execution"]:
+            cfg.signal_time = str(d["execution"]["entry_time"])
+        if hasattr(cfg.execution, "entry_time") and cfg.signal_time:
+            cfg.execution.entry_time = cfg.signal_time
         if "sizing" in d:
             cfg.sizing = SizingParams(**d["sizing"])
         if "fees" in d:

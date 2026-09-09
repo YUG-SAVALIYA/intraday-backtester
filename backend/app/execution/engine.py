@@ -40,7 +40,7 @@ class SymbolData:
     """Holds numpy arrays for a single symbol, aligned to trading calendar."""
     __slots__ = (
         "symbol", "dates", "opens", "highs", "lows", "closes", "volumes",
-        "date_to_idx"
+        "date_to_idx", "prices_1500"
     )
 
     def __init__(self, symbol: str, df: pd.DataFrame):
@@ -52,6 +52,10 @@ class SymbolData:
         self.closes = df["close"].to_numpy(dtype=np.float64)
         self.volumes = df["volume"].to_numpy(dtype=np.float64)
         self.date_to_idx: dict[date, int] = {d: i for i, d in enumerate(self.dates)}
+        if "price_1500" in df.columns:
+            self.prices_1500 = df["price_1500"].to_numpy(dtype=np.float64)
+        else:
+            self.prices_1500 = self.closes.copy()
 
     def get_idx(self, d: date) -> Optional[int]:
         return self.date_to_idx.get(d)
@@ -86,6 +90,9 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
     """
     Execute a full backtest.
     """
+    if config.partial_exit and config.partial_exit.enabled:
+        config.partial_exit.validate()
+
     strategy = config.strategy
     execution = config.execution
     sizing = config.sizing
@@ -160,36 +167,97 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
             if sched_day == current_day
         ]
 
-        for sym in symbols_to_exit:
-            sd = sym_data.get(sym)
-            if sd is None:
-                logger.error(f"{sym}: Symbol data entirely missing on exit day {current_day}. Trade unexecutable. Trapping capital.")
-                portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_entirely")
-                del pending_exits[sym]
-                continue
-            exit_idx = sd.get_idx(current_day)
-            if exit_idx is None:
-                logger.error(f"{sym}: No data on strict scheduled exit day {current_day}. Trade unexecutable. Trapping capital.")
-                portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_on_exit_day")
-                del pending_exits[sym]
-                continue
-            
-            raw_exit = getattr_field(sd, execution.exit_price_field, exit_idx)
-            exit_raw = raw_exit
+        if config.partial_exit and config.partial_exit.enabled:
+            for sym in symbols_to_exit:
+                sd = sym_data.get(sym)
+                if sd is None:
+                    logger.error(f"{sym}: Symbol data entirely missing on exit day {current_day}. Trade unexecutable. Trapping capital.")
+                    portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_entirely")
+                    del pending_exits[sym]
+                    continue
+                exit_idx = sd.get_idx(current_day)
+                if exit_idx is None:
+                    logger.error(f"{sym}: No data on strict scheduled exit day {current_day}. Trade unexecutable. Trapping capital.")
+                    portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_on_exit_day")
+                    del pending_exits[sym]
+                    continue
 
-            # Apply exit slippage (sell)
-            exit_price = apply_slippage(exit_raw, execution.exit_slippage_pct, "sell")
-            exit_trade_value = exit_price * (portfolio.open_positions.get(sym, None) and portfolio.open_positions[sym].qty or 0)
-            exit_fees = compute_fees(exit_trade_value, "sell", fees_cfg)
+                pos = portfolio.open_positions.get(sym)
+                if pos is None:
+                    del pending_exits[sym]
+                    continue
 
-            portfolio.exit_trade(
-                symbol=sym,
-                exit_date=current_day,
-                exit_price=exit_price,
-                exit_fees=exit_fees,
-                exit_reason="next_open",
-            )
-            del pending_exits[sym]
+                orig_qty = pos.initial_qty if pos.initial_qty > 0 else pos.qty
+                first_qty = math.floor(orig_qty * (config.partial_exit.first_pct / 100.0))
+
+                # Leg 1: Exit first_qty at 09:15
+                if first_qty > 0:
+                    raw_exit_0915 = getattr_field(sd, execution.exit_price_field, exit_idx)
+                    exit_price_0915 = apply_slippage(raw_exit_0915, execution.exit_slippage_pct, "sell")
+                    exit_trade_value_0915 = exit_price_0915 * first_qty
+                    exit_fees_0915 = compute_fees(exit_trade_value_0915, "sell", fees_cfg)
+                    portfolio.partial_exit_trade(
+                        symbol=sym,
+                        exit_date=current_day,
+                        exit_price=exit_price_0915,
+                        exit_qty=first_qty,
+                        exit_fees=exit_fees_0915,
+                        exit_time=config.partial_exit.first_time,
+                        exit_reason="partial_exit_first",
+                        exit_slippage=execution.exit_slippage_pct,
+                    )
+
+                # Leg 2: Exit remaining quantity at 15:00
+                pos_after = portfolio.open_positions.get(sym)
+                rem_qty = pos_after.qty if pos_after else 0
+                if rem_qty > 0:
+                    raw_exit_1500 = float(sd.prices_1500[exit_idx])
+                    exit_price_1500 = apply_slippage(raw_exit_1500, execution.exit_slippage_pct, "sell")
+                    exit_trade_value_1500 = exit_price_1500 * rem_qty
+                    exit_fees_1500 = compute_fees(exit_trade_value_1500, "sell", fees_cfg)
+                    portfolio.partial_exit_trade(
+                        symbol=sym,
+                        exit_date=current_day,
+                        exit_price=exit_price_1500,
+                        exit_qty=rem_qty,
+                        exit_fees=exit_fees_1500,
+                        exit_time=config.partial_exit.second_time,
+                        exit_reason="partial_exit_second",
+                        exit_slippage=execution.exit_slippage_pct,
+                    )
+
+                del pending_exits[sym]
+        else:
+            for sym in symbols_to_exit:
+                sd = sym_data.get(sym)
+                if sd is None:
+                    logger.error(f"{sym}: Symbol data entirely missing on exit day {current_day}. Trade unexecutable. Trapping capital.")
+                    portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_entirely")
+                    del pending_exits[sym]
+                    continue
+                exit_idx = sd.get_idx(current_day)
+                if exit_idx is None:
+                    logger.error(f"{sym}: No data on strict scheduled exit day {current_day}. Trade unexecutable. Trapping capital.")
+                    portfolio.mark_unexecutable_trade(sym, current_day, reason="missing_data_on_exit_day")
+                    del pending_exits[sym]
+                    continue
+                
+                raw_exit = getattr_field(sd, execution.exit_price_field, exit_idx)
+                exit_raw = raw_exit
+
+                # Apply exit slippage (sell)
+                exit_price = apply_slippage(exit_raw, execution.exit_slippage_pct, "sell")
+                exit_trade_value = exit_price * (portfolio.open_positions.get(sym, None) and portfolio.open_positions[sym].qty or 0)
+                exit_fees = compute_fees(exit_trade_value, "sell", fees_cfg)
+
+                portfolio.exit_trade(
+                    symbol=sym,
+                    exit_date=current_day,
+                    exit_price=exit_price,
+                    exit_fees=exit_fees,
+                    exit_reason="next_open",
+                )
+                del pending_exits[sym]
 
         # ── 6a-2. EXIT: close theoretical positions scheduled for today ─────
         symbols_t_exit = [
@@ -208,22 +276,40 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 del pending_theoretical_exits[sym]
                 continue
             
-            t_exit_raw = getattr_field(sd, execution.exit_price_field, exit_idx)
-            
-            t_exit_price = apply_slippage(t_exit_raw, execution.exit_slippage_pct, "sell")
-            
-            # Simulate a trade proportional to initial capital for accurate % fees
-            qty = max(1, int(sizing.initial_capital / t_entry_price))
-            entry_val = qty * t_entry_price
-            exit_val = qty * t_exit_price
-            
-            e_fees = compute_fees(entry_val, "buy", fees_cfg)
-            x_fees = compute_fees(exit_val, "sell", fees_cfg)
-            
-            net_pnl = (exit_val - entry_val) - e_fees - x_fees
-            ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
-            
-            theoretical_closed_returns.append(ret_pct)
+            if config.partial_exit and config.partial_exit.enabled:
+                t_exit_raw_1 = getattr_field(sd, execution.exit_price_field, exit_idx)
+                t_exit_price_1 = apply_slippage(t_exit_raw_1, execution.exit_slippage_pct, "sell")
+                t_exit_raw_2 = float(sd.prices_1500[exit_idx])
+                t_exit_price_2 = apply_slippage(t_exit_raw_2, execution.exit_slippage_pct, "sell")
+
+                qty = max(1, int(sizing.initial_capital / t_entry_price))
+                q1 = math.floor(qty * (config.partial_exit.first_pct / 100.0))
+                q2 = qty - q1
+
+                entry_val = qty * t_entry_price
+                exit_val = q1 * t_exit_price_1 + q2 * t_exit_price_2
+                e_fees = compute_fees(entry_val, "buy", fees_cfg)
+                x_fees = compute_fees(q1 * t_exit_price_1, "sell", fees_cfg) + compute_fees(q2 * t_exit_price_2, "sell", fees_cfg)
+
+                net_pnl = (exit_val - entry_val) - e_fees - x_fees
+                ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
+                theoretical_closed_returns.append(ret_pct)
+            else:
+                t_exit_raw = getattr_field(sd, execution.exit_price_field, exit_idx)
+                t_exit_price = apply_slippage(t_exit_raw, execution.exit_slippage_pct, "sell")
+                
+                # Simulate a trade proportional to initial capital for accurate % fees
+                qty = max(1, int(sizing.initial_capital / t_entry_price))
+                entry_val = qty * t_entry_price
+                exit_val = qty * t_exit_price
+                
+                e_fees = compute_fees(entry_val, "buy", fees_cfg)
+                x_fees = compute_fees(exit_val, "sell", fees_cfg)
+                
+                net_pnl = (exit_val - entry_val) - e_fees - x_fees
+                ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
+                theoretical_closed_returns.append(ret_pct)
+
             del pending_theoretical_exits[sym]
 
         # ── 6b. SIGNAL: evaluate all symbols for today ────────────────────
@@ -314,7 +400,61 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
 
         assert portfolio.cash >= -1.0, f"Invariant failed: Cash went negative ({portfolio.cash})"
 
-        # ── 6d. Daily snapshot ─────────────────────────────────────────────
+        # ── 6d. Final-day liquidation (if end of backtest) ─────────────────
+        # On the final trading day, liquidate remaining positions at today's close
+        # BEFORE taking the final EOD snapshot. This ensures:
+        # 1. No lookahead: exit price uses trading_days[-1] close, never data beyond end_date.
+        # 2. Synchronized snapshot: final EOD snapshot represents the post-liquidation
+        #    portfolio (Final Equity = Final Cash = Initial Capital + Total Net P&L).
+        if current_day == trading_days[-1]:
+            for sym in list(portfolio.open_positions.keys()):
+                pos = portfolio.open_positions[sym]
+                sd = sym_data.get(sym)
+                idx = sd.get_idx(current_day) if sd else None
+                if idx is not None:
+                    exit_raw = float(sd.closes[idx])
+                else:
+                    exit_raw = pos.entry_price
+                exit_price = apply_slippage(exit_raw, execution.exit_slippage_pct, "sell")
+                exit_fees = compute_fees(exit_price * pos.qty, "sell", fees_cfg)
+                if config.partial_exit and config.partial_exit.enabled and pos.partial_exits:
+                    portfolio.partial_exit_trade(
+                        symbol=sym,
+                        exit_date=current_day,
+                        exit_price=exit_price,
+                        exit_qty=pos.qty,
+                        exit_fees=exit_fees,
+                        exit_time="15:25",
+                        exit_reason="backtest_end",
+                        exit_slippage=execution.exit_slippage_pct,
+                    )
+                else:
+                    portfolio.exit_trade(
+                        symbol=sym,
+                        exit_date=current_day,
+                        exit_price=exit_price,
+                        exit_fees=exit_fees,
+                        exit_reason="backtest_end",
+                    )
+            pending_exits.clear()
+
+            # Close remaining theoretical trades on final day using final-day close
+            for sym, (_, t_entry_price) in list(pending_theoretical_exits.items()):
+                sd = sym_data.get(sym)
+                idx = sd.get_idx(current_day) if sd else None
+                t_exit_raw = float(sd.closes[idx]) if (sd and idx is not None) else t_entry_price
+                t_exit_price = apply_slippage(t_exit_raw, execution.exit_slippage_pct, "sell")
+                qty = max(1, int(sizing.initial_capital / t_entry_price))
+                entry_val = qty * t_entry_price
+                exit_val = qty * t_exit_price
+                e_fees = compute_fees(entry_val, "buy", fees_cfg)
+                x_fees = compute_fees(exit_val, "sell", fees_cfg)
+                net_pnl = (exit_val - entry_val) - e_fees - x_fees
+                ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
+                theoretical_closed_returns.append(ret_pct)
+            pending_theoretical_exits.clear()
+
+        # ── 6e. Daily snapshot ─────────────────────────────────────────────
         # Mark open positions at today's close for equity calculation
         mark_prices = {}
         for sym in list(portfolio.open_positions.keys()):
@@ -326,36 +466,40 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
 
         portfolio.take_daily_snapshot(current_day, mark_prices)
 
-    # ── 7. Close any still-open positions at end of backtest ──────────────
-    for sym in list(portfolio.open_positions.keys()):
-        pos = portfolio.open_positions[sym]
-        sd = sym_data.get(sym)
-        if sd and sd.dates.size > 0:
-            exit_price = float(sd.closes[-1])
-        else:
-            exit_price = pos.entry_price
-        exit_fees = compute_fees(exit_price * pos.qty, "sell", fees_cfg)
-        portfolio.exit_trade(
-            symbol=sym,
-            exit_date=trading_days[-1],
-            exit_price=exit_price,
-            exit_fees=exit_fees,
-            exit_reason="backtest_end",
-        )
-
-    # Close remaining theoretical trades
-    for sym, (_, t_entry_price) in pending_theoretical_exits.items():
-        sd = sym_data.get(sym)
-        t_exit_raw = float(sd.closes[-1]) if sd and sd.dates.size > 0 else t_entry_price
-        t_exit_price = apply_slippage(t_exit_raw, execution.exit_slippage_pct, "sell")
-        qty = max(1, int(sizing.initial_capital / t_entry_price))
-        entry_val = qty * t_entry_price
-        exit_val = qty * t_exit_price
-        e_fees = compute_fees(entry_val, "buy", fees_cfg)
-        x_fees = compute_fees(exit_val, "sell", fees_cfg)
-        net_pnl = (exit_val - entry_val) - e_fees - x_fees
-        ret_pct = (net_pnl / entry_val * 100.0) if entry_val > 0 else 0.0
-        theoretical_closed_returns.append(ret_pct)
+    # ── 7. Fallback safety: ensure zero open positions at end of backtest ─
+    if portfolio.open_positions:
+        final_day = trading_days[-1] if trading_days else None
+        for sym in list(portfolio.open_positions.keys()):
+            pos = portfolio.open_positions[sym]
+            sd = sym_data.get(sym)
+            idx = sd.get_idx(final_day) if (sd and final_day) else None
+            exit_raw = float(sd.closes[idx]) if (sd and idx is not None) else pos.entry_price
+            exit_price = apply_slippage(exit_raw, execution.exit_slippage_pct, "sell")
+            exit_fees = compute_fees(exit_price * pos.qty, "sell", fees_cfg)
+            if config.partial_exit and config.partial_exit.enabled and pos.partial_exits:
+                portfolio.partial_exit_trade(
+                    symbol=sym,
+                    exit_date=final_day or pos.entry_date,
+                    exit_price=exit_price,
+                    exit_qty=pos.qty,
+                    exit_fees=exit_fees,
+                    exit_time="15:25",
+                    exit_reason="backtest_end",
+                    exit_slippage=execution.exit_slippage_pct,
+                )
+            else:
+                portfolio.exit_trade(
+                    symbol=sym,
+                    exit_date=final_day or pos.entry_date,
+                    exit_price=exit_price,
+                    exit_fees=exit_fees,
+                    exit_reason="backtest_end",
+                )
+        if portfolio.daily_snapshots:
+            portfolio.daily_snapshots[-1].equity = portfolio.cash
+            portfolio.daily_snapshots[-1].cash = portfolio.cash
+            portfolio.daily_snapshots[-1].open_positions_count = 0
+            portfolio.daily_snapshots[-1].holdings = []
 
     if progress_callback:
         progress_callback("Computing metrics & saving output to output/ folder...")
@@ -448,6 +592,7 @@ def getattr_field(sd: SymbolData, field: str, idx: int) -> float:
         "high": sd.highs,
         "low": sd.lows,
         "close": sd.closes,
+        "price_1500": sd.prices_1500,
     }
     arr = mapping.get(field.lower(), sd.closes)
     return float(arr[idx])

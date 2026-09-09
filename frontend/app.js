@@ -59,6 +59,10 @@ document.getElementById("btn-run").addEventListener("click", async () => {
     // 2. Build config using default base + user overrides
     const baseConfig = await api("GET", "/api/config/defaults");
     
+    const peEnabled = document.getElementById("cfg-partial-exit-enabled")?.checked || false;
+    const peFirstPct = parseFloat(document.getElementById("cfg-partial-first-pct")?.value || 50.0);
+    const peSecondPct = Math.max(0, 100.0 - peFirstPct);
+
     const config = {
       ...baseConfig,
       strategy: {
@@ -72,6 +76,13 @@ document.getElementById("btn-run").addEventListener("click", async () => {
       sizing: {
         ...baseConfig.sizing,
         max_volume_pct: parseFloat(document.getElementById("cfg-vol-pct").value)
+      },
+      partial_exit: {
+        partial_exit_enabled: peEnabled,
+        partial_exit_first_pct: peFirstPct,
+        partial_exit_first_time: "09:15",
+        partial_exit_second_pct: peSecondPct,
+        partial_exit_second_time: "15:00",
       },
       start_date: document.getElementById("cfg-start").value || null,
       end_date: document.getElementById("cfg-end").value || null,
@@ -460,12 +471,13 @@ function renderLedgerDetailRow(d) {
   // Sells items
   let sellsHtml = "";
   if (!d.sells || d.sells.length === 0) {
-    sellsHtml = `<div class="detail-empty">No positions exited on this day (09:15 IST)</div>`;
+    sellsHtml = `<div class="detail-empty">No positions exited on this day</div>`;
   } else {
     sellsHtml = d.sells.map(s => `
       <div class="detail-item">
         <div>
           <span class="font-bold" style="color:#c084fc">${s.symbol}</span>
+          <span class="badge" style="font-size:10px; margin-left:4px; background:rgba(192,132,252,0.15); color:#c084fc;">${s.exit_time || "09:15"}</span>
           <span style="color:var(--text-muted); margin-left:4px">Qty: ${s.qty} (₹${fmt(s.entry_price)} → ₹${fmt(s.exit_price)})</span>
         </div>
         <div class="text-right">
@@ -609,7 +621,14 @@ function renderTradesRows() {
       <tr>
         <td><strong>${t.symbol}</strong> <span class="badge ${badgeCls}">${isWin ? 'WIN' : 'LOSS'}</span></td>
         <td>${t.entry_date} <span class="neutral" style="font-size:11px">15:25</span></td>
-        <td>${t.exit_date} <span class="neutral" style="font-size:11px">09:15</span></td>
+        <td>
+          ${t.exit_date} 
+          <span class="neutral" style="font-size:11px">
+            ${t.exits && t.exits.length > 1 
+              ? `<span class="badge" style="background:rgba(41,98,255,0.15); color:#2962ff; font-size:10px; cursor:help;" title="Leg 1: ${t.exits[0].qty} shares @ ₹${fmt(t.exits[0].exit_price)} (09:15) | Leg 2: ${t.exits[1].qty} shares @ ₹${fmt(t.exits[1].exit_price)} (15:00)">PARTIAL</span>`
+              : (t.exit_reason === 'backtest_end' ? '15:25 (End)' : '09:15')}
+          </span>
+        </td>
         <td class="font-mono font-bold">${t.qty}</td>
         <td class="font-mono">₹${fmt(t.entry_price)}</td>
         <td class="font-mono">₹${fmt(t.exit_price)}</td>
@@ -901,3 +920,25 @@ document.getElementById("btn-load-past-run").addEventListener("click", () => {
 checkHealth();
 setInterval(checkHealth, 5000);
 fetchPastRuns(); // Load list of past runs on startup
+
+// Partial exit UI wiring
+const peCheckbox = document.getElementById("cfg-partial-exit-enabled");
+const peDetails = document.getElementById("partial-exit-details");
+const peFirstInput = document.getElementById("cfg-partial-first-pct");
+const peSecondInput = document.getElementById("cfg-partial-second-pct");
+
+if (peCheckbox && peDetails) {
+  peCheckbox.addEventListener("change", () => {
+    peDetails.style.display = peCheckbox.checked ? "block" : "none";
+  });
+}
+
+if (peFirstInput && peSecondInput) {
+  peFirstInput.addEventListener("input", () => {
+    let v = parseFloat(peFirstInput.value);
+    if (isNaN(v)) v = 50;
+    if (v < 1) v = 1;
+    if (v > 99) v = 99;
+    peSecondInput.value = (100 - v).toFixed(0);
+  });
+}

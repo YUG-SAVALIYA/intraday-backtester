@@ -13,9 +13,21 @@ import pyarrow as pa
 import pandas as pd
 import numpy as np
 
+from dotenv import load_dotenv, find_dotenv
+
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.environ.get("BACKTESTER_DATA_DIR", r"D:\datas")
+# Automatically load .env (checks current directory, backend directory, and ancestors)
+load_dotenv(find_dotenv(usecwd=True))
+_backend_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+if os.path.exists(_backend_env):
+    load_dotenv(_backend_env)
+
+DATA_DIR = os.environ.get("BACKTESTER_DATA_DIR", r"E:\datas").strip("\"'")
+if not os.path.exists(DATA_DIR) and os.path.exists(r"E:\datas"):
+    DATA_DIR = r"E:\datas"
+
+logger.info(f"Loaded DATA_DIR: '{DATA_DIR}' (exists: {os.path.exists(DATA_DIR)})")
 _CACHE: dict[str, pd.DataFrame] = {}  # symbol → cleaned daily DataFrame
 
 
@@ -52,13 +64,21 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df["date"] = dt_ist.dt.date
     df["time"] = dt_ist.dt.time
 
-    # Filter to market hours we care about (up to 15:25)
-    cutoff_time = pd.to_datetime("15:25:00").time()
+    # Filter to market hours strictly known at 15:25 (up to the completed 15:20 candle).
+    # The 15:20 candle covers 15:20–15:25 and is complete at 15:25.
+    # The 15:25 candle covers 15:25–15:30 and must be excluded to prevent lookahead.
+    cutoff_time = pd.to_datetime("15:20:00").time()
     df = df[df["time"] <= cutoff_time]
 
     # Drop missing
     df.dropna(subset=["open", "high", "low", "close", "volume"], inplace=True)
     df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)]
+
+    # Extract the exact price available at 15:00:00 (close of completed 14:55 candle).
+    # Candle 14:55 covers 14:55–15:00 and is complete at 15:00:00.
+    # It contains ZERO data from 15:00:01 onwards.
+    df_1500 = df[df["time"] <= pd.to_datetime("14:55:00").time()]
+    last_1500 = df_1500.groupby("date")["close"].last().rename("price_1500")
 
     # Aggregate by date
     daily = df.groupby("date").agg({
@@ -68,6 +88,9 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         "close": "last",
         "volume": "sum"
     }).reset_index()
+
+    daily = daily.merge(last_1500, on="date", how="left")
+    daily["price_1500"] = daily["price_1500"].fillna(daily["close"])
 
     # Sort chronologically
     daily.sort_values("date", inplace=True)

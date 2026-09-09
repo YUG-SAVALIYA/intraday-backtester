@@ -23,6 +23,12 @@ class Position:
     own_capital_used: float     # Own money allocated
     borrowed: float             # Margin borrowed
     leverage: float
+    initial_qty: int = 0
+    partial_exits: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.initial_qty == 0:
+            self.initial_qty = self.qty
 
 
 @dataclass
@@ -42,9 +48,10 @@ class ClosedTrade:
     borrowed: float
     leverage: float
     exit_reason: str            # "next_open"
+    exits: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "symbol": self.symbol,
             "entry_date": str(self.entry_date),
             "exit_date": str(self.exit_date),
@@ -61,6 +68,9 @@ class ClosedTrade:
             "leverage": round(self.leverage, 2),
             "exit_reason": self.exit_reason,
         }
+        if self.exits:
+            d["exits"] = self.exits
+        return d
 
 
 @dataclass
@@ -265,6 +275,135 @@ class Portfolio:
 
         return trade
 
+    def partial_exit_trade(
+        self,
+        symbol: str,
+        exit_date: date,
+        exit_price: float,
+        exit_qty: int,
+        exit_fees: float,
+        exit_time: str = "09:15",
+        exit_reason: str = "partial_exit",
+        exit_slippage: float = 0.0,
+    ) -> Optional[ClosedTrade]:
+        """
+        Execute a partial exit of an open position.
+        Updates cash, realized P&L, fees, and position state.
+        When position quantity reaches 0, removes position and creates an aggregated ClosedTrade.
+        """
+        pos = self.open_positions.get(symbol)
+        if pos is None or exit_qty <= 0:
+            return None
+
+        actual_exit_qty = min(exit_qty, pos.qty)
+        if actual_exit_qty <= 0:
+            return None
+
+        # Gross & Net P&L for this partial exit leg
+        leg_gross_pnl = (exit_price - pos.entry_price) * actual_exit_qty
+        pro_rata_entry_fees = pos.entry_fees * (actual_exit_qty / pos.initial_qty) if pos.initial_qty > 0 else 0.0
+        leg_net_pnl = leg_gross_pnl - pro_rata_entry_fees - exit_fees
+        leg_cost_basis = actual_exit_qty * pos.entry_price
+        leg_return_pct = (leg_net_pnl / leg_cost_basis * 100.0) if leg_cost_basis > 0 else 0.0
+
+        # Cash & borrowed capital handling
+        proceeds = actual_exit_qty * exit_price - exit_fees
+        borrowed_repaid = pos.borrowed * (actual_exit_qty / pos.qty) if pos.qty > 0 else 0.0
+        pos.borrowed -= borrowed_repaid
+        
+        cash_returned = proceeds - borrowed_repaid
+        self.cash += max(0.0, cash_returned)
+
+        self.total_fees_paid += exit_fees
+        self._daily_fees += exit_fees
+        self.cumulative_realized_pnl += leg_net_pnl
+        self._daily_pnl += leg_net_pnl
+
+        # Track this exit leg on the position
+        leg_info = {
+            "exit_date": str(exit_date),
+            "exit_time": exit_time,
+            "exit_price": round(exit_price, 4),
+            "qty": actual_exit_qty,
+            "gross_pnl": round(leg_gross_pnl, 2),
+            "entry_fees": round(pro_rata_entry_fees, 2),
+            "exit_fees": round(exit_fees, 2),
+            "net_pnl": round(leg_net_pnl, 2),
+            "net_pnl_raw": leg_net_pnl,
+            "slippage": round(exit_slippage, 4),
+            "exit_reason": exit_reason,
+        }
+        pos.partial_exits.append(leg_info)
+
+        # Update remaining position state
+        own_capital_repaid = pos.own_capital_used * (actual_exit_qty / pos.qty) if pos.qty > 0 else 0.0
+        pos.own_capital_used -= own_capital_repaid
+        pos.qty -= actual_exit_qty
+        pos.cost_basis = pos.qty * pos.entry_price
+
+        # Record sell leg in daily sells
+        self._daily_sells.append({
+            "symbol": symbol,
+            "entry_date": str(pos.entry_date),
+            "entry_time": "15:25",
+            "exit_date": str(exit_date),
+            "exit_time": exit_time,
+            "entry_price": round(pos.entry_price, 4),
+            "exit_price": round(exit_price, 4),
+            "qty": actual_exit_qty,
+            "gross_pnl": round(leg_gross_pnl, 2),
+            "entry_fees": round(pro_rata_entry_fees, 2),
+            "exit_fees": round(exit_fees, 2),
+            "total_fees": round(pro_rata_entry_fees + exit_fees, 2),
+            "net_pnl": round(leg_net_pnl, 2),
+            "return_pct": round(leg_return_pct, 4),
+            "own_capital_used": round(own_capital_repaid, 2),
+            "exit_reason": exit_reason,
+            "is_partial": pos.qty > 0,
+        })
+
+        # If fully closed, pop and return aggregated ClosedTrade
+        if pos.qty == 0:
+            self.open_positions.pop(symbol, None)
+
+            total_gross_pnl = sum(leg["gross_pnl"] for leg in pos.partial_exits)
+            total_exit_fees = sum(leg["exit_fees"] for leg in pos.partial_exits)
+            total_net_pnl = sum(leg["net_pnl_raw"] for leg in pos.partial_exits)
+
+            total_proceeds = sum(leg["qty"] * leg["exit_price"] for leg in pos.partial_exits)
+            avg_exit_price = total_proceeds / pos.initial_qty if pos.initial_qty > 0 else exit_price
+            initial_cost = pos.entry_price * pos.initial_qty
+            total_return_pct = (total_net_pnl / initial_cost * 100.0) if initial_cost > 0 else 0.0
+
+            clean_legs = []
+            for leg in pos.partial_exits:
+                c_leg = dict(leg)
+                c_leg.pop("net_pnl_raw", None)
+                clean_legs.append(c_leg)
+
+            trade = ClosedTrade(
+                symbol=symbol,
+                entry_date=pos.entry_date,
+                exit_date=exit_date,
+                entry_price=pos.entry_price,
+                exit_price=round(avg_exit_price, 4),
+                qty=pos.initial_qty,
+                gross_pnl=round(total_gross_pnl, 2),
+                entry_fees=round(pos.entry_fees, 2),
+                exit_fees=round(total_exit_fees, 2),
+                net_pnl=round(total_net_pnl, 2),
+                return_pct=round(total_return_pct, 4),
+                own_capital_used=round(initial_cost, 2),
+                borrowed=0.0,
+                leverage=pos.leverage,
+                exit_reason="partial_exit" if len(clean_legs) > 1 else exit_reason,
+                exits=clean_legs,
+            )
+            self.closed_trades.append(trade)
+            return trade
+
+        return None
+
     def mark_unexecutable_trade(self, symbol: str, date: date, reason: str) -> None:
         """
         Flag a trade as unexecutable (e.g., missing data on the strict exit day).
@@ -293,6 +432,8 @@ class Portfolio:
         # Completely cancel the financial impact of the entry to protect equity and Max DD.
         # This restores the cash exactly as if the trade was never entered.
         self.cash += (pos.own_capital_used + pos.entry_fees)
+        self.total_fees_paid -= pos.entry_fees
+        self._daily_fees -= pos.entry_fees
 
     def take_daily_snapshot(self, d: date, mark_prices: dict[str, float] = None) -> None:
         """Record end-of-day portfolio state."""

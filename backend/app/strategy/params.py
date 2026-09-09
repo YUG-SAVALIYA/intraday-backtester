@@ -65,6 +65,114 @@ class FeeParams:
     stamp_duty_pct: float = 0.015      # Stamp duty (buy side)
 
 
+import math
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+
+@dataclass
+class PartialExitParams:
+    """Configuration for optional partial exits."""
+    partial_exit_enabled: bool = False
+    partial_exit_first_pct: float = 50.0
+    partial_exit_first_time: str = "09:15"
+    partial_exit_second_pct: float = 50.0
+    partial_exit_second_time: str = "15:00"
+
+    def __init__(
+        self,
+        partial_exit_enabled: Optional[bool] = None,
+        partial_exit_first_pct: Optional[float] = None,
+        partial_exit_first_time: Optional[str] = None,
+        partial_exit_second_pct: Optional[float] = None,
+        partial_exit_second_time: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        first_pct: Optional[float] = None,
+        first_time: Optional[str] = None,
+        second_pct: Optional[float] = None,
+        second_time: Optional[str] = None,
+    ):
+        if partial_exit_enabled is not None:
+            self.partial_exit_enabled = partial_exit_enabled
+        elif enabled is not None:
+            self.partial_exit_enabled = enabled
+        else:
+            self.partial_exit_enabled = False
+
+        if partial_exit_first_pct is not None:
+            self.partial_exit_first_pct = partial_exit_first_pct
+        elif first_pct is not None:
+            self.partial_exit_first_pct = first_pct
+        else:
+            self.partial_exit_first_pct = 50.0
+
+        if partial_exit_first_time is not None:
+            self.partial_exit_first_time = partial_exit_first_time
+        elif first_time is not None:
+            self.partial_exit_first_time = first_time
+        else:
+            self.partial_exit_first_time = "09:15"
+
+        if partial_exit_second_pct is not None:
+            self.partial_exit_second_pct = partial_exit_second_pct
+        elif second_pct is not None:
+            self.partial_exit_second_pct = second_pct
+        else:
+            self.partial_exit_second_pct = 50.0
+
+        if partial_exit_second_time is not None:
+            self.partial_exit_second_time = partial_exit_second_time
+        elif second_time is not None:
+            self.partial_exit_second_time = second_time
+        else:
+            self.partial_exit_second_time = "15:00"
+
+    @property
+    def enabled(self) -> bool:
+        return self.partial_exit_enabled
+
+    @property
+    def first_pct(self) -> float:
+        return self.partial_exit_first_pct
+
+    @property
+    def first_time(self) -> str:
+        return self.partial_exit_first_time
+
+    @property
+    def second_pct(self) -> float:
+        return self.partial_exit_second_pct
+
+    @property
+    def second_time(self) -> str:
+        return self.partial_exit_second_time
+
+    def to_dict(self) -> dict:
+        return {
+            "partial_exit_enabled": self.partial_exit_enabled,
+            "partial_exit_first_pct": self.partial_exit_first_pct,
+            "partial_exit_first_time": self.partial_exit_first_time,
+            "partial_exit_second_pct": self.partial_exit_second_pct,
+            "partial_exit_second_time": self.partial_exit_second_time,
+        }
+
+    def validate(self) -> None:
+        if not self.partial_exit_enabled:
+            return
+        if not (0.0 < self.partial_exit_first_pct <= 100.0):
+            raise ValueError(f"partial_exit_first_pct must be between 0 and 100, got {self.partial_exit_first_pct}")
+        if not (0.0 < self.partial_exit_second_pct <= 100.0):
+            raise ValueError(f"partial_exit_second_pct must be between 0 and 100, got {self.partial_exit_second_pct}")
+        if not math.isclose(self.partial_exit_first_pct + self.partial_exit_second_pct, 100.0, rel_tol=1e-5):
+            raise ValueError(
+                f"partial_exit percentages must sum to 100%, got {self.partial_exit_first_pct + self.partial_exit_second_pct}%"
+            )
+        if self.partial_exit_first_time >= self.partial_exit_second_time:
+            raise ValueError(
+                f"partial_exit_first_time ({self.partial_exit_first_time}) must be strictly earlier than partial_exit_second_time ({self.partial_exit_second_time})"
+            )
+
+
 @dataclass
 class BacktestConfig:
     """Full backtest configuration — the single object passed through the pipeline."""
@@ -72,6 +180,7 @@ class BacktestConfig:
     execution: ExecutionParams = field(default_factory=ExecutionParams)
     sizing: SizingParams = field(default_factory=SizingParams)
     fees: FeeParams = field(default_factory=FeeParams)
+    partial_exit: PartialExitParams = field(default_factory=PartialExitParams)
 
     # Date range
     start_date: Optional[str] = None   # ISO date string "YYYY-MM-DD"
@@ -94,6 +203,32 @@ class BacktestConfig:
             cfg.sizing = SizingParams(**d["sizing"])
         if "fees" in d:
             cfg.fees = FeeParams(**d["fees"])
+        if "partial_exit" in d:
+            pe = d["partial_exit"]
+            cfg.partial_exit = PartialExitParams(
+                partial_exit_enabled=pe.get("partial_exit_enabled", pe.get("enabled", False)),
+                partial_exit_first_pct=float(pe.get("partial_exit_first_pct", pe.get("first_pct", 50.0))),
+                partial_exit_first_time=str(pe.get("partial_exit_first_time", pe.get("first_time", "09:15"))),
+                partial_exit_second_pct=float(pe.get("partial_exit_second_pct", pe.get("second_pct", 50.0))),
+                partial_exit_second_time=str(pe.get("partial_exit_second_time", pe.get("second_time", "15:00"))),
+            )
+        elif "partial_exit_enabled" in d:
+            cfg.partial_exit = PartialExitParams(
+                partial_exit_enabled=bool(d.get("partial_exit_enabled", False)),
+                partial_exit_first_pct=float(d.get("partial_exit_first_pct", 50.0)),
+                partial_exit_first_time=str(d.get("partial_exit_first_time", "09:15")),
+                partial_exit_second_pct=float(d.get("partial_exit_second_pct", 50.0)),
+                partial_exit_second_time=str(d.get("partial_exit_second_time", "15:00")),
+            )
+        elif "execution" in d and ("partial_exit_enabled" in d["execution"] or "enabled" in d["execution"]):
+            ex = d["execution"]
+            cfg.partial_exit = PartialExitParams(
+                partial_exit_enabled=bool(ex.get("partial_exit_enabled", ex.get("enabled", False))),
+                partial_exit_first_pct=float(ex.get("partial_exit_first_pct", ex.get("first_pct", 50.0))),
+                partial_exit_first_time=str(ex.get("partial_exit_first_time", ex.get("first_time", "09:15"))),
+                partial_exit_second_pct=float(ex.get("partial_exit_second_pct", ex.get("second_pct", 50.0))),
+                partial_exit_second_time=str(ex.get("partial_exit_second_time", ex.get("second_time", "15:00"))),
+            )
         cfg.start_date = d.get("start_date")
         cfg.end_date = d.get("end_date")
         cfg.symbols = d.get("symbols", [])

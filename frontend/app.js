@@ -80,10 +80,22 @@ document.getElementById("btn-run").addEventListener("click", async () => {
       strategy: {
         ...baseConfig.strategy,
         min_range_pct: parseFloat(document.getElementById("cfg-range").value),
+        max_range_pct: parseFloat(document.getElementById("cfg-max-range")?.value || 0) || 0.0,
         min_body_pct: parseFloat(document.getElementById("cfg-body").value),
-        min_close_loc_pct: parseFloat(document.getElementById("cfg-close-loc").value),
+        max_body_pct: parseFloat(document.getElementById("cfg-max-body")?.value || 0) || 0.0,
+        min_close_loc_pct: parseFloat(document.getElementById("cfg-close-loc")?.value || 90.0),
+        max_close_loc_pct: parseFloat(document.getElementById("cfg-max-close-loc")?.value || 0) || 0.0,
         volume_lookback: parseInt(document.getElementById("cfg-vol-lookback").value, 10),
         volume_multiplier: parseFloat(document.getElementById("cfg-vol-mult").value),
+        prev_close_filter_enabled: document.getElementById("cfg-prev-close-filter")?.checked || false,
+        prev_close_ref: document.getElementById("cfg-prev-close-ref")?.value || "candle_1525",
+        prev_close_filter_mode: document.getElementById("cfg-prev-close-mode")?.value || "less_than_or_equal",
+        max_prev_close_pct: document.getElementById("cfg-max-prev-close-pct")?.value !== "" && !isNaN(parseFloat(document.getElementById("cfg-max-prev-close-pct")?.value))
+          ? parseFloat(document.getElementById("cfg-max-prev-close-pct").value)
+          : 20.0,
+        min_prev_close_pct: (document.getElementById("cfg-prev-close-mode")?.value !== "less_than_or_equal" && document.getElementById("cfg-min-prev-close-pct")?.value !== "" && !isNaN(parseFloat(document.getElementById("cfg-min-prev-close-pct")?.value)))
+          ? parseFloat(document.getElementById("cfg-min-prev-close-pct").value)
+          : null,
       },
       execution: {
         ...baseConfig.execution,
@@ -643,17 +655,22 @@ function renderTradesRows() {
   tbody.innerHTML = pageRows.map(t => {
     const isWin = t.net_pnl > 0;
     const badgeCls = isWin ? "badge-profit" : "badge-loss";
+    const distBadge = (t.prev_close_dist_pct != null)
+      ? `<span class="badge" style="font-size:10px; background:rgba(255,255,255,0.06); color:#a0aec0; margin-left:4px; cursor:help;" 
+          title="Distance from Yesterday: ${t.prev_close_dist_pct >= 0 ? '+' : ''}${t.prev_close_dist_pct}%\nRange: ${t.breakout_metrics?.range_pct != null ? t.breakout_metrics.range_pct + '%' : '-'}\nBody: ${t.breakout_metrics?.body_pct != null ? t.breakout_metrics.body_pct + '%' : '-'}\nClose Loc: ${t.breakout_metrics?.close_loc_pct != null ? t.breakout_metrics.close_loc_pct + '%' : '-'}\nVol: ${t.breakout_metrics?.volume_multiple != null ? t.breakout_metrics.volume_multiple + 'x' : '-'}">
+          ${t.prev_close_dist_pct >= 0 ? '+' : ''}${t.prev_close_dist_pct.toFixed(1)}%
+        </span>`
+      : '';
+    const exitTimeStr = t.exits && t.exits.length > 1 
+      ? `<span class="badge" style="background:rgba(41,98,255,0.15); color:#2962ff; font-size:10px; cursor:help;" title="${t.exits.map((e, idx) => `Leg ${idx+1}: ${e.qty} shares @ ₹${fmt(e.exit_price)} (${e.exit_time || 'IST'})`).join(' | ')}">PARTIAL</span>`
+      : (t.exit_reason === 'backtest_end' ? `${t.exit_time || currentSignalTime} (End)` : (t.exit_time || (t.exits && t.exits[0] ? t.exits[0].exit_time : (t.exit_reason ? t.exit_reason.replace('exit_', '') : '09:15'))));
     return `
       <tr>
-        <td><strong>${t.symbol}</strong> <span class="badge ${badgeCls}">${isWin ? 'WIN' : 'LOSS'}</span></td>
+        <td><strong>${t.symbol}</strong> <span class="badge ${badgeCls}">${isWin ? 'WIN' : 'LOSS'}</span>${distBadge}</td>
         <td>${t.entry_date} <span class="neutral" style="font-size:11px">${t.entry_time || currentSignalTime}</span></td>
         <td>
           ${t.exit_date} 
-          <span class="neutral" style="font-size:11px">
-            ${t.exits && t.exits.length > 1 
-              ? `<span class="badge" style="background:rgba(41,98,255,0.15); color:#2962ff; font-size:10px; cursor:help;" title="${t.exits.map((e, idx) => `Leg ${idx+1}: ${e.qty} shares @ ₹${fmt(e.exit_price)} (${e.exit_time || 'IST'})`).join(' | ')}">PARTIAL</span>`
-              : (t.exit_reason === 'backtest_end' ? `${t.exit_time || currentSignalTime} (End)` : (t.exits && t.exits[0] ? t.exits[0].exit_time : (t.exit_reason ? t.exit_reason.replace('exit_', '') : '09:15')))}
-          </span>
+          <span class="neutral" style="font-size:11px">${exitTimeStr}</span>
         </td>
         <td class="font-mono font-bold">${t.qty}</td>
         <td class="font-mono">₹${fmt(t.entry_price)}</td>
@@ -1006,3 +1023,105 @@ if (sigTimeEl) {
     if (thBuys) thBuys.textContent = `Buys (${currentSignalTime})`;
   });
 }
+
+window.togglePrevCloseFilter = function(checked) {
+  const details = document.getElementById("prev-close-details");
+  if (details) {
+    details.style.opacity = checked ? "1" : "0.75";
+  }
+  updatePrevCloseUI();
+};
+
+window.setPrevClosePct = function(pct) {
+  const chk = document.getElementById("cfg-prev-close-filter");
+  if (chk) chk.checked = true;
+  const maxInput = document.getElementById("cfg-max-prev-close-pct");
+  if (maxInput) {
+    maxInput.value = pct;
+  }
+  updatePrevCloseUI();
+};
+
+window.updatePrevCloseUI = function() {
+  const chk = document.getElementById("cfg-prev-close-filter");
+  const modeEl = document.getElementById("cfg-prev-close-mode");
+  const badge = document.getElementById("prev-close-badge");
+  const groupMin = document.getElementById("group-min-prev-close");
+  const groupMax = document.getElementById("group-max-prev-close");
+  const minInp = document.getElementById("cfg-min-prev-close-pct");
+  const maxInp = document.getElementById("cfg-max-prev-close-pct");
+
+  if (!modeEl || !badge) return;
+
+  const mode = modeEl.value;
+  const isEnabled = chk ? chk.checked : false;
+
+  if (mode === "less_than_or_equal") {
+    if (groupMin) groupMin.style.display = "none";
+    if (groupMax) groupMax.style.display = "block";
+    const maxVal = maxInp && maxInp.value !== "" ? maxInp.value : "20";
+    if (isEnabled) {
+      badge.textContent = `ACTIVE (≤ ${maxVal}%)`;
+      badge.style.background = "rgba(16,185,129,0.15)";
+      badge.style.color = "#10b981";
+    } else {
+      badge.textContent = `OFF (≤ ${maxVal}%)`;
+      badge.style.background = "rgba(255,255,255,0.08)";
+      badge.style.color = "#8899a6";
+    }
+  } else if (mode === "greater_than_or_equal") {
+    if (groupMin) groupMin.style.display = "block";
+    if (groupMax) groupMax.style.display = "none";
+    const minVal = minInp && minInp.value !== "" ? minInp.value : "0";
+    if (isEnabled) {
+      badge.textContent = `ACTIVE (≥ ${minVal}%)`;
+      badge.style.background = "rgba(16,185,129,0.15)";
+      badge.style.color = "#10b981";
+    } else {
+      badge.textContent = `OFF (≥ ${minVal}%)`;
+      badge.style.background = "rgba(255,255,255,0.08)";
+      badge.style.color = "#8899a6";
+    }
+  } else if (mode === "between") {
+    if (groupMin) groupMin.style.display = "block";
+    if (groupMax) groupMax.style.display = "block";
+    const minVal = minInp && minInp.value !== "" ? minInp.value : "0";
+    const maxVal = maxInp && maxInp.value !== "" ? maxInp.value : "20";
+    if (isEnabled) {
+      badge.textContent = `ACTIVE (${minVal}% to ${maxVal}%)`;
+      badge.style.background = "rgba(16,185,129,0.15)";
+      badge.style.color = "#10b981";
+    } else {
+      badge.textContent = `OFF (${minVal}% to ${maxVal}%)`;
+      badge.style.background = "rgba(255,255,255,0.08)";
+      badge.style.color = "#8899a6";
+    }
+  }
+};
+
+const prevCloseCheckbox = document.getElementById("cfg-prev-close-filter");
+if (prevCloseCheckbox) {
+  prevCloseCheckbox.addEventListener("change", () => {
+    window.togglePrevCloseFilter(prevCloseCheckbox.checked);
+  });
+}
+
+const prevCloseMode = document.getElementById("cfg-prev-close-mode");
+if (prevCloseMode) prevCloseMode.addEventListener("change", () => {
+  const chk = document.getElementById("cfg-prev-close-filter");
+  if (chk) chk.checked = true;
+  window.updatePrevCloseUI();
+});
+const minPrevInput = document.getElementById("cfg-min-prev-close-pct");
+if (minPrevInput) minPrevInput.addEventListener("input", () => {
+  const chk = document.getElementById("cfg-prev-close-filter");
+  if (chk) chk.checked = true;
+  window.updatePrevCloseUI();
+});
+const maxPrevInput = document.getElementById("cfg-max-prev-close-pct");
+if (maxPrevInput) maxPrevInput.addEventListener("input", () => {
+  const chk = document.getElementById("cfg-prev-close-filter");
+  if (chk) chk.checked = true;
+  window.updatePrevCloseUI();
+});
+window.updatePrevCloseUI();

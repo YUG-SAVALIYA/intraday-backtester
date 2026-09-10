@@ -40,7 +40,8 @@ class SymbolData:
     """Holds numpy arrays for a single symbol, aligned to trading calendar."""
     __slots__ = (
         "symbol", "dates", "opens", "highs", "lows", "closes", "volumes",
-        "date_to_idx", "prices_by_time"
+        "date_to_idx", "prices_by_time",
+        "candle_1525_closes", "candle_1520_closes", "daily_closes"
     )
 
     def __init__(self, symbol: str, df: pd.DataFrame):
@@ -64,6 +65,46 @@ class SymbolData:
                 if len(t_str) == 4:
                     hh_mm = f"{t_str[:2]}:{t_str[2:]}"
                     self.prices_by_time[hh_mm] = df[col].to_numpy(dtype=np.float64)
+
+        # Prior day reference closes
+        if "candle_1525_close" in df.columns:
+            self.candle_1525_closes = df["candle_1525_close"].to_numpy(dtype=np.float64)
+        else:
+            self.candle_1525_closes = self.closes
+
+        if "candle_1520_close" in df.columns:
+            self.candle_1520_closes = df["candle_1520_close"].to_numpy(dtype=np.float64)
+        else:
+            self.candle_1520_closes = self.closes
+
+        if "daily_close" in df.columns:
+            self.daily_closes = df["daily_close"].to_numpy(dtype=np.float64)
+        else:
+            self.daily_closes = self.closes
+
+    def get_prev_close(self, idx: int, ref: str = "candle_1525") -> Optional[float]:
+        """
+        Get previous day's reference close at index idx (idx - 1).
+        Supports:
+          - "candle_1525" (last day 3:25 candle close)
+          - "candle_1520" (last day 3:20 candle close / 3:25 PM price)
+          - "daily_close" (EOD close)
+        """
+        if idx < 0 or idx >= len(self.dates):
+            return None
+        ref_norm = str(ref).lower().strip()
+        if "1525" in ref_norm or "3:25" in ref_norm or "325" in ref_norm:
+            val = float(self.candle_1525_closes[idx])
+        elif "1520" in ref_norm or "3:20" in ref_norm or "320" in ref_norm:
+            val = float(self.candle_1520_closes[idx])
+        elif "daily" in ref_norm or "eod" in ref_norm:
+            val = float(self.daily_closes[idx])
+        else:
+            val = float(self.candle_1525_closes[idx])
+
+        if np.isnan(val) or val <= 0:
+            val = float(self.closes[idx])
+        return val if val > 0 else None
 
     @property
     def prices_1500(self) -> np.ndarray:
@@ -363,6 +404,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
             # Compute rolling avg volume (prior lookback days only)
             avg_vol, has_sufficient = sd.rolling_avg_volume(idx, current_day, strategy.volume_lookback, target_start_date)
 
+            prev_close = sd.get_prev_close(idx - 1, ref=strategy.prev_close_ref) if idx > 0 else None
             sig = compute_signal(
                 open_=sd.opens[idx],
                 high=sd.highs[idx],
@@ -372,6 +414,7 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
                 avg_volume_20d=avg_vol,
                 has_sufficient_history=has_sufficient,
                 params=strategy,
+                prev_close=prev_close,
             )
 
             if sig.signal:
@@ -385,53 +428,62 @@ def run_backtest(config: BacktestConfig, progress_callback=None) -> dict:
         # ── 6c. ENTRY: size and open positions ────────────────────────────
         # Rank signals by breakout strength score (descending) so trades that
         # break the strategy conditions most strongly take the available slots.
-        signals_today.sort(key=lambda x: x[1].score, reverse=True)
+        # Only enter new overnight positions if there is a subsequent trading day to exit.
+        if current_day != trading_days[-1]:
+            signals_today.sort(key=lambda x: x[1].score, reverse=True)
 
-        for sym, sig, entry_price in signals_today:
-            # Record theoretical trade for "All Signals" metric
-            if sym not in pending_theoretical_exits:
-                pending_theoretical_exits[sym] = (next_day, entry_price)
+            for sym, sig, entry_price in signals_today:
+                # Record theoretical trade for "All Signals" metric
+                if sym not in pending_theoretical_exits:
+                    pending_theoretical_exits[sym] = (next_day, entry_price)
 
-            current_equity = portfolio.equity()
-            sizing_result = compute_position_size(
-                entry_price=entry_price,
-                current_equity=current_equity,
-                current_cash=portfolio.cash,
-                open_positions_count=portfolio.open_positions_count,
-                current_gross_exposure=portfolio.gross_exposure,
-                avg_volume_20d=sig.avg_volume_20d,
-                params=sizing,
-                fees_cfg=fees_cfg,
-            )
+                current_equity = portfolio.equity()
+                sizing_result = compute_position_size(
+                    entry_price=entry_price,
+                    current_equity=current_equity,
+                    current_cash=portfolio.cash,
+                    open_positions_count=portfolio.open_positions_count,
+                    current_gross_exposure=portfolio.gross_exposure,
+                    avg_volume_20d=sig.avg_volume_20d,
+                    params=sizing,
+                    fees_cfg=fees_cfg,
+                )
 
-            if sizing_result.skipped:
-                total_signals_rejected += 1
-                if len(skipped_entries) < 200:
-                    skipped_entries.append({
-                        "date": str(current_day),
-                        "symbol": sym,
-                        "reason": sizing_result.skip_reason,
-                    })
-                continue
+                if sizing_result.skipped:
+                    total_signals_rejected += 1
+                    if len(skipped_entries) < 200:
+                        skipped_entries.append({
+                            "date": str(current_day),
+                            "symbol": sym,
+                            "reason": sizing_result.skip_reason,
+                        })
+                    continue
 
-            entry_trade_value = sizing_result.qty * entry_price
-            entry_fees = compute_fees(entry_trade_value, "buy", fees_cfg)
+                entry_trade_value = sizing_result.qty * entry_price
+                entry_fees = compute_fees(entry_trade_value, "buy", fees_cfg)
 
-            success = portfolio.enter_trade(
-                symbol=sym,
-                entry_date=current_day,
-                entry_price=entry_price,
-                qty=sizing_result.qty,
-                entry_fees=entry_fees,
-                own_capital_used=sizing_result.own_capital_used,
-                borrowed=sizing_result.borrowed,
-                leverage=sizing.leverage,
-                entry_time=execution.entry_time,
-            )
+                success = portfolio.enter_trade(
+                    symbol=sym,
+                    entry_date=current_day,
+                    entry_price=entry_price,
+                    qty=sizing_result.qty,
+                    entry_fees=entry_fees,
+                    own_capital_used=sizing_result.own_capital_used,
+                    borrowed=sizing_result.borrowed,
+                    leverage=sizing.leverage,
+                    entry_time=execution.entry_time,
+                    prev_close_dist_pct=round(float(sig.prev_close_distance_pct), 2) if sig.prev_close_distance_pct is not None else None,
+                    breakout_metrics={
+                        "range_pct": round(float(sig.range_pct), 2),
+                        "body_pct": round(float(sig.body_pct), 2),
+                        "close_loc_pct": round(float(sig.close_loc_pct), 2),
+                        "volume_multiple": round(float(sig.volume_multiple), 2),
+                    },
+                )
 
-            if success:
-                # Schedule exit for next trading day
-                pending_exits[sym] = next_day
+                if success:
+                    # Schedule exit for next trading day
+                    pending_exits[sym] = next_day
 
         assert portfolio.cash >= -1.0, f"Invariant failed: Cash went negative ({portfolio.cash})"
 

@@ -11,12 +11,22 @@ class StrategyParams:
     """Signal generation parameters."""
     # Signal thresholds
     min_range_pct: float = 10.0        # Range % >= this
+    max_range_pct: float = 0.0         # Range % <= this (0 = disabled / no upper limit)
     min_body_pct: float = 5.0          # Bullish body % > this
+    max_body_pct: float = 0.0          # Bullish body % <= this (0 = disabled / no upper limit)
     min_close_loc_pct: float = 90.0    # Close location % >= this
+    max_close_loc_pct: float = 0.0     # Close location % <= this (0 = disabled / no upper limit)
 
     # Volume filter
     volume_lookback: int = 20          # Number of prior trading days for avg volume
     volume_multiplier: float = 2.5     # Optimized: 2.5x volume spike
+
+    # Previous day close distance filter (flexible reference & thresholds)
+    prev_close_filter_enabled: bool = False
+    prev_close_ref: str = "candle_1525"        # "candle_1525" (last day 3:25 candle close), "candle_1520" (3:20 candle close / 3:25 PM), "daily_close" (EOD close)
+    prev_close_filter_mode: str = "less_than_or_equal"  # "less_than_or_equal", "greater_than_or_equal", "between"
+    max_prev_close_pct: float = 20.0           # Max % distance from prev ref close to today 3:20 close
+    min_prev_close_pct: Optional[float] = None # Min % distance (optional, e.g. -100.0 or 0.0)
 
 
 @dataclass
@@ -228,7 +238,45 @@ class BacktestConfig:
     def from_dict(cls, d: dict) -> "BacktestConfig":
         cfg = cls()
         if "strategy" in d:
-            cfg.strategy = StrategyParams(**d["strategy"])
+            strat_d = dict(d["strategy"])
+            # Handle aliases for max body / nody range
+            if "max_body_range" in strat_d and "max_body_pct" not in strat_d:
+                strat_d["max_body_pct"] = strat_d.pop("max_body_range")
+            if "max_nody_range" in strat_d and "max_body_pct" not in strat_d:
+                strat_d["max_body_pct"] = strat_d.pop("max_nody_range")
+            if "max_body" in strat_d and "max_body_pct" not in strat_d:
+                strat_d["max_body_pct"] = strat_d.pop("max_body")
+            if "max_range" in strat_d and "max_range_pct" not in strat_d:
+                strat_d["max_range_pct"] = strat_d.pop("max_range")
+            if "max_close_location" in strat_d and "max_close_loc_pct" not in strat_d:
+                strat_d["max_close_loc_pct"] = strat_d.pop("max_close_location")
+            if "max_close_loc" in strat_d and "max_close_loc_pct" not in strat_d:
+                strat_d["max_close_loc_pct"] = strat_d.pop("max_close_loc")
+            if "max_close_loc_pct" in strat_d and strat_d["max_close_loc_pct"] is not None:
+                strat_d["max_close_loc_pct"] = float(strat_d["max_close_loc_pct"])
+            # Prev close filter aliases & flexibility
+            if "prev_close_reference" in strat_d and "prev_close_ref" not in strat_d:
+                strat_d["prev_close_ref"] = strat_d.pop("prev_close_reference")
+            if "prev_close_candle" in strat_d and "prev_close_ref" not in strat_d:
+                strat_d["prev_close_ref"] = strat_d.pop("prev_close_candle")
+            if "prev_close_mode" in strat_d and "prev_close_filter_mode" not in strat_d:
+                strat_d["prev_close_filter_mode"] = strat_d.pop("prev_close_mode")
+            if "min_prev_close" in strat_d and "min_prev_close_pct" not in strat_d:
+                strat_d["min_prev_close_pct"] = strat_d.pop("min_prev_close")
+            if "max_prev_close" in strat_d and "max_prev_close_pct" not in strat_d:
+                strat_d["max_prev_close_pct"] = strat_d.pop("max_prev_close")
+            if "min_prev_close_pct" in strat_d and strat_d["min_prev_close_pct"] is not None:
+                strat_d["min_prev_close_pct"] = float(strat_d["min_prev_close_pct"])
+            if "max_prev_close_pct" in strat_d and strat_d["max_prev_close_pct"] is not None:
+                strat_d["max_prev_close_pct"] = float(strat_d["max_prev_close_pct"])
+            known = {
+                "min_range_pct", "max_range_pct", "min_body_pct", "max_body_pct",
+                "min_close_loc_pct", "max_close_loc_pct", "volume_lookback", "volume_multiplier",
+                "prev_close_filter_enabled", "prev_close_ref", "prev_close_filter_mode",
+                "max_prev_close_pct", "min_prev_close_pct"
+            }
+            clean_strat = {k: v for k, v in strat_d.items() if k in known}
+            cfg.strategy = StrategyParams(**clean_strat)
         if "execution" in d:
             cfg.execution = ExecutionParams(**d["execution"])
         elif "exit_time" in d:

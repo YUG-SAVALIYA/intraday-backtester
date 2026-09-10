@@ -26,6 +26,8 @@ class Position:
     entry_time: str = "15:20"
     initial_qty: int = 0
     partial_exits: list[dict] = field(default_factory=list)
+    prev_close_dist_pct: Optional[float] = None
+    breakout_metrics: Optional[dict] = None
 
     def __post_init__(self):
         if self.initial_qty == 0:
@@ -50,7 +52,10 @@ class ClosedTrade:
     leverage: float
     exit_reason: str            # "next_open"
     entry_time: str = "15:20"
+    exit_time: str = "09:15"
     exits: list[dict] = field(default_factory=list)
+    prev_close_dist_pct: Optional[float] = None
+    breakout_metrics: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -58,6 +63,7 @@ class ClosedTrade:
             "entry_date": str(self.entry_date),
             "entry_time": self.entry_time,
             "exit_date": str(self.exit_date),
+            "exit_time": self.exit_time,
             "entry_price": round(self.entry_price, 4),
             "exit_price": round(self.exit_price, 4),
             "qty": self.qty,
@@ -70,6 +76,8 @@ class ClosedTrade:
             "borrowed": round(self.borrowed, 2),
             "leverage": round(self.leverage, 2),
             "exit_reason": self.exit_reason,
+            "prev_close_dist_pct": round(self.prev_close_dist_pct, 2) if self.prev_close_dist_pct is not None else None,
+            "breakout_metrics": self.breakout_metrics,
         }
         if self.exits:
             d["exits"] = self.exits
@@ -165,6 +173,8 @@ class Portfolio:
         borrowed: float,
         leverage: float,
         entry_time: str = "15:20",
+        prev_close_dist_pct: Optional[float] = None,
+        breakout_metrics: Optional[dict] = None,
     ) -> bool:
         """
         Open a new position. Returns True if successful.
@@ -192,6 +202,8 @@ class Portfolio:
             borrowed=borrowed,
             leverage=leverage,
             entry_time=entry_time,
+            prev_close_dist_pct=prev_close_dist_pct,
+            breakout_metrics=breakout_metrics,
         )
 
         self._daily_buys.append({
@@ -258,6 +270,9 @@ class Portfolio:
             leverage=pos.leverage,
             exit_reason=exit_reason,
             entry_time=pos.entry_time,
+            exit_time=exit_time,
+            prev_close_dist_pct=pos.prev_close_dist_pct,
+            breakout_metrics=pos.breakout_metrics,
         )
         self.closed_trades.append(trade)
 
@@ -405,7 +420,10 @@ class Portfolio:
                 leverage=pos.leverage,
                 exit_reason="partial_exit" if len(clean_legs) > 1 else exit_reason,
                 entry_time=pos.entry_time,
+                exit_time=exit_time,
                 exits=clean_legs,
+                prev_close_dist_pct=pos.prev_close_dist_pct,
+                breakout_metrics=pos.breakout_metrics,
             )
             self.closed_trades.append(trade)
             return trade

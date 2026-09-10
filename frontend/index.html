@@ -55,13 +55,28 @@
         </div>
 
         <div class="form-group">
+          <label>Max Range % (0 = No Limit)</label>
+          <input type="number" id="cfg-max-range" class="input-field" value="0" step="0.5" title="Filter out candles with range larger than this (0 = disabled)" />
+        </div>
+
+        <div class="form-group">
           <label>Min Body %</label>
           <input type="number" id="cfg-body" class="input-field" value="5" step="0.5" />
         </div>
 
         <div class="form-group">
+          <label>Max Body % (0 = No Limit)</label>
+          <input type="number" id="cfg-max-body" class="input-field" value="0" step="0.5" title="Filter out candles with body larger than this (0 = disabled)" />
+        </div>
+
+        <div class="form-group">
           <label>Min Close Location %</label>
           <input type="number" id="cfg-close-loc" class="input-field" value="90" step="1" />
+        </div>
+
+        <div class="form-group">
+          <label>Max Close Location % (0 = No Limit)</label>
+          <input type="number" id="cfg-max-close-loc" class="input-field" value="0" step="1" min="0" max="100" title="Filter out candles where close location exceeds this (0 = disabled / no upper limit)" />
         </div>
 
         <div class="form-group">
@@ -77,6 +92,61 @@
         <div class="form-group">
           <label>Max Volume % (0 = No Limit)</label>
           <input type="number" id="cfg-vol-pct" class="input-field" value="0" step="0.1" title="Set to 0 to disable liquidity limit" />
+        </div>
+
+        <!-- Prev Day Close Distance Filter (Toggle & Settings) -->
+        <div class="form-group" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <label for="cfg-prev-close-filter" style="font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; margin: 0;">
+              <input type="checkbox" id="cfg-prev-close-filter" checked onchange="togglePrevCloseFilter(this.checked)" style="width: 16px; height: 16px; accent-color: var(--accent, #2962ff); cursor: pointer;" />
+              <span>Prev Close Distance Filter</span>
+            </label>
+            <span class="badge badge-profit" id="prev-close-badge" style="font-size: 10px; padding: 2px 6px; background: rgba(16,185,129,0.15); color: #10b981; border-radius: 4px;">ACTIVE (≤ 20%)</span>
+          </div>
+
+          <!-- Settings Container: Always visible so user immediately sees where to set the value -->
+          <div id="prev-close-details" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+            
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label style="font-size: 11px; color: #8899a6;">Reference Price (Yesterday)</label>
+              <select id="cfg-prev-close-ref" onchange="updatePrevCloseUI()" class="input-field" style="font-size: 11px; padding: 6px 8px;">
+                <option value="candle_1525" selected>Last Day 3:25 Candle Close (15:25 candle)</option>
+                <option value="candle_1520">Last Day 3:20 Candle Close / 3:25 PM Price (15:20 candle)</option>
+                <option value="daily_close">Daily Candle Close (15:30 EOD)</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label style="font-size: 11px; color: #8899a6;">Filter Mode</label>
+              <select id="cfg-prev-close-mode" onchange="updatePrevCloseUI()" class="input-field" style="font-size: 11px; padding: 6px 8px;">
+                <option value="less_than_or_equal" selected>Keep Trades ≤ Max Threshold</option>
+                <option value="greater_than_or_equal">Keep Trades ≥ Min Threshold</option>
+                <option value="between">Between Min &amp; Max Range</option>
+              </select>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <div id="group-min-prev-close" style="display: none;">
+                <label style="font-size: 10px; color: #8899a6;">Min % Distance</label>
+                <input type="number" id="cfg-min-prev-close-pct" oninput="updatePrevCloseUI()" class="input-field" value="" step="0.5" placeholder="e.g. 0" />
+              </div>
+              <div id="group-max-prev-close">
+                <label style="font-size: 10px; font-weight: 600; color: #58a6ff;">Set Max % Distance</label>
+                <input type="number" id="cfg-max-prev-close-pct" oninput="updatePrevCloseUI()" class="input-field" value="20" step="0.5" placeholder="e.g. 5, 10, 15, 20" style="border-color: rgba(41,98,255,0.4);" />
+              </div>
+            </div>
+
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+              <span style="font-size: 10px; color: #8899a6;">Quick Presets:</span>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(5)">5%</button>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(10)">10%</button>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(15)">15%</button>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(20)">20%</button>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(25)">25%</button>
+              <button type="button" class="btn-xs" style="font-size: 10px; padding: 2px 7px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #c9d1d9; border-radius: 4px; cursor: pointer;" onclick="setPrevClosePct(30)">30%</button>
+            </div>
+
+          </div>
         </div>
 
         <div class="form-group">

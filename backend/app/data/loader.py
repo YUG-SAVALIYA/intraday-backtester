@@ -69,6 +69,20 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str, signal_time: str = 
     df["date"] = dt_ist.dt.date
     df["time"] = dt_ist.dt.time
 
+    # Drop missing & invalid
+    df.dropna(subset=["open", "high", "low", "close", "volume"], inplace=True)
+    df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)]
+
+    from datetime import time as dtime
+
+    # Pre-extract full-day closes to serve as prior-day reference prices:
+    # 1. candle_1525_close: 15:25 candle (covering 15:25–15:30, completes at 15:30:00)
+    c25_series = df[df["time"] == dtime(15, 25)].groupby("date")["close"].last()
+    # 2. candle_1520_close: 15:20 candle (covering 15:20–15:25, completes at 15:25:00)
+    c20_series = df[df["time"] == dtime(15, 20)].groupby("date")["close"].last()
+    # 3. daily_close: last close of regular market hours (time <= 15:30:00)
+    eod_series = df[df["time"] <= dtime(15, 30)].groupby("date")["close"].last()
+
     # Filter to market hours strictly known at signal check time:
     # For 15:20 (default): Cutoff is completed 15:15 candle (covers 15:15–15:20).
     # The 15:20 candle covers 15:20–15:25 and is excluded to allow the 5-min order placement window.
@@ -79,15 +93,10 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str, signal_time: str = 
         cutoff_time = pd.to_datetime("15:20:00").time()
     df = df[df["time"] <= cutoff_time]
 
-    # Drop missing
-    df.dropna(subset=["open", "high", "low", "close", "volume"], inplace=True)
-    df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)]
-
     # Map target exit times to the candle whose close represents the price at that exact time.
     # E.g. Candle 09:15 covers 09:15-09:20 and completes at 09:20:00.
     # Candle 09:25 covers 09:25-09:30 and completes at 09:30:00.
     # Candle 14:55 covers 14:55-15:00 and completes at 15:00:00.
-    from datetime import time as dtime
     candle_time_map = {
         dtime(9, 15): "price_0920",
         dtime(9, 20): "price_0925",
@@ -138,6 +147,16 @@ def _clean_and_aggregate_5min(df: pd.DataFrame, symbol: str, signal_time: str = 
     # Backward fallback for 15:00 / 15:20 if ever NaN
     daily["price_1500"] = daily["price_1500"].fillna(daily["close"])
     daily["price_1520"] = daily["price_1520"].fillna(daily["close"])
+
+    # Attach pre-extracted reference closes (for prior day distance calculations)
+    daily["candle_1525_close"] = daily["date"].map(c25_series)
+    daily["candle_1520_close"] = daily["date"].map(c20_series)
+    daily["daily_close"] = daily["date"].map(eod_series)
+
+    # Fallback chains for missing candles (e.g. half days, Muhurat session, DR days):
+    daily["daily_close"] = daily["daily_close"].fillna(daily["close"])
+    daily["candle_1525_close"] = daily["candle_1525_close"].fillna(daily["daily_close"])
+    daily["candle_1520_close"] = daily["candle_1520_close"].fillna(daily["price_1520"]).fillna(daily["close"])
 
     # Sort chronologically
     daily.sort_values("date", inplace=True)
